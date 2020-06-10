@@ -40,6 +40,9 @@ typedef uint32_t a1fs_blk_t;
 /** Inode number type. */
 typedef uint32_t a1fs_ino_t;
 
+/* The index of the first data block that is not reserved
+   blocks 0-31 are reserved for the inodes. */
+#define A1FS_FIRST_BLOCK 32
 
 /** Magic value that can be used to identify an a1fs image. */
 #define A1FS_MAGIC 0xC5C369A1C5C369A1ul
@@ -51,7 +54,15 @@ typedef struct a1fs_superblock {
 	/** File system size in bytes. */
 	uint64_t size;
 
-	//TODO: add necessary fields
+	//TODO
+	unsigned int inodes_count;       /* Total number of inodes */
+	unsigned int blocks_count;       /* Total number of data blocks */
+	unsigned int free_inodes_count;  /* Number of free inodes */
+	unsigned int free_blocks_count;  /* Number of free data blocks */
+
+	unsigned int   block_bitmap;      /* Blocks bitmap block */
+	unsigned int   inode_bitmap;      /* Inodes bitmap block */
+	unsigned int   inode_table;       /* Inodes table block */
 
 } a1fs_superblock;
 
@@ -68,6 +79,12 @@ typedef struct a1fs_extent {
 	a1fs_blk_t count;
 
 } a1fs_extent;
+
+/* The index of the single indirect pointer in the extent array of an inode */
+#define A1FS_IND_BLOCK 10
+
+/* The index of the reserved root inode */
+#define A1FS_ROOT_INO 1
 
 
 /** a1fs inode. */
@@ -96,7 +113,11 @@ typedef struct a1fs_inode {
 	 */
 	struct timespec mtime;
 
-	//TODO: add necessary fields
+	//TODO
+	unsigned int extents;      /* Extents count */
+	unsigned int free_extents; /* Available extents */
+	a1fs_extent extent[11]; /* Pointers to extents */
+	// extent[0-9] are direct, extent[10] is Single Indirect
 
 	//NOTE: You might have to add padding (e.g. a dummy char array field) at the
 	// end of the struct in order to satisfy the assertion below. Try to keep
