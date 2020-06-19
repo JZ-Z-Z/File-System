@@ -71,7 +71,10 @@ typedef struct a1fs_superblock {
 	unsigned int block_bitmap;      /* Blocks bitmap block */
 	unsigned int inode_bitmap;      /* Inodes bitmap block */
 	unsigned int inode_table;       /* Inodes table block */
-	unsigned int data_region;       /* Data region starting block */  
+	unsigned int data_region;       /* Data region starting block */ 
+
+	unsigned int block_bitmap_span; /* The number of blocks the block bitmap spans */
+	unsigned int inode_bitmap_span; /* The number of blocks the inode bitmap spans */ 
 
 } a1fs_superblock;
 
