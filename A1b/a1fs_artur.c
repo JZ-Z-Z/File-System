@@ -589,184 +589,79 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	(void)mode;
 	(void)fs;
 
-	unsigned char *disk = fs->image;
-	struct a1fs_superblock *superblock = (struct a1fs_superblock*)(disk);
+	struct a1fs_superblock *superblock = (struct a1fs_superblock*)(fs->image);
+	struct a1fs_inode *inodes = (struct a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
+	struct a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
+	unsigned char *block_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->data_region));
+	unsigned char *inode_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_table));
+	unsigned char *inode_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_bitmap)); 
+	unsigned char *block_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->block_bitmap)); 
 
-	//check to see if there is available space for a new directory
-	if (superblock->free_inodes_count == 0 || superblock->free_blocks_count <= 1) {
+	//check to see if there is space for an additional inode
+	if (superblock->free_inodes_count == 0) {
 		return -ENOSPC;
 	}
 
-	unsigned char *block_bits = (unsigned char*)(disk + (A1FS_BLOCK_SIZE * superblock->block_bitmap));
-	unsigned char *inode_bits = (unsigned char*)(disk + (A1FS_BLOCK_SIZE * superblock->inode_bitmap));
-	int block_index = -1;
-	int inode_index = -1;
+	//find parent directory to insert new dentry in
+	struct a1fs_inode *parent_directory = (void *)0;
+	char path_copy[A1FS_NAME_MAX];
+	strcpy(path_copy, path);
+	char *final_slash = strrchr(path_copy, '/');
+	*final_slash = '\0';
+	char file_name[A1FS_NAME_MAX];
+	strcpy(file_name, (final_slash + 1));
+	inode_from_path(root_inode, &parent_directory, path_copy, fs->image);
 
-	//determine which block index is free and mark it for the new directory's spot
-	for (int i = 0; (unsigned int)i < superblock->block_bitmap_span; i++) {
-		block_bits = (unsigned char*)(disk + (A1FS_BLOCK_SIZE * superblock->block_bitmap * i));
+	//find place in parent directory to insert new dentry into
+	int created_dentry = 0;
+	int inode_index = find_available_space(fs->image, 1);
 
-		//alternate for loop for when we are on the final bitmap block which doesn't necessarily have all 4096 bits
-		if ((unsigned int)i == superblock->block_bitmap_span - 1) {			
-			for (int j = 0; (unsigned int)j < superblock->blocks_count - (i * A1FS_BLOCK_SIZE); j++){
-				if (!block_bits[j]) {
-					block_bits[j] = 1;
-					block_index = i * A1FS_BLOCK_SIZE + j;
+	//FOR TESTING PURPOSES
+	block_bitmap[10] = 1;
+	parent_directory->extent[0].start = 10;
+	parent_directory->extent[0].count = 1;
+
+
+	for (int i = 0; (unsigned int)i < A1FS_EXTENTS_LENGTH; i++) {
+
+		if (i != 9) {		
+			//loop through dentrys in extent blocks
+			for (int j = 0; (unsigned int)j < parent_directory->extent[i].count * A1FS_BLOCK_SIZE / sizeof(a1fs_dentry); j++) {
+				struct a1fs_dentry *dentry = (struct a1fs_dentry*)(block_start + (A1FS_BLOCK_SIZE * parent_directory->extent[i].start) + (sizeof(a1fs_dentry) * j));
+
+				if (dentry == NULL || dentry->ino == 0) {			//found available space to put new dentry
+					struct a1fs_dentry dir_dentry;
+					strcpy(dir_dentry.name, file_name);
+					dir_dentry.ino = inode_index;
+					memcpy(dentry, &dir_dentry, sizeof(a1fs_dentry));
+					created_dentry = 1;
+					break;
 				}
 			}
 		}
-		else {
-			for (int j = 0; j < 4096; j++) {
-				if (!block_bits[j]) {
-					block_bits[j] = 1;
-					block_index = i * A1FS_BLOCK_SIZE + j;
-				}
-			}
+		else {				//case where space available is in indirect blocks				TODO
+
 		}
-		if (block_index >= 0) {
+		if (created_dentry) {
 			break;
 		}
 	}
 
-	//determine which inode index is free and mark it for the new directory's spot
-	for (int i = 0; (unsigned int)i < superblock->inode_bitmap_span; i++) {
-		inode_bits = (unsigned char*)(disk + (A1FS_BLOCK_SIZE * superblock->inode_bitmap * i));
+	if (!created_dentry) {	//failed to create dentry in parent directory due to no space		TODO
 
-		if ((unsigned int)i == superblock->inode_bitmap_span - 1) {
-			for (int j = 0; (unsigned int)j < superblock->inodes_count - (i * A1FS_BLOCK_SIZE); j++){
-				if (!inode_bits[j]) {
-					inode_bits[j] = 1;
-					inode_index = i * A1FS_BLOCK_SIZE + j;
-				}
-			}
-		}
-		for (int j = 0; j < 4096; j++) {
-			if (!inode_bits[j]) {
-				inode_bits[j] = 1;
-				inode_index = i * A1FS_BLOCK_SIZE + j;
-				break;
-			}
-		}
-		if (inode_index >= 0) {
-			break;
-		}
 	}
-	superblock->free_inodes_count -= 1;
-	superblock->free_blocks_count -= 1;
-
-	//create the new inode for this directory
+	
+	//create the inode for the new directory and save it to the inode table
 	struct a1fs_inode inode;
-	struct a1fs_inode *inode_pointer = &inode;
-	inode_pointer->mode = mode | S_IFDIR; 														//NOT SURE WHAT THIS DOES BUT THE STARTER CODE COMMENTS SAY TO DO IT
-	inode_pointer->links = 1;
-	inode_pointer->size = 0;																	//MIGHT NEED TO CHANGE SIZE AND LINKS BC IDK WHAT THE INITIAL VALUES SHOULD BE
-	clock_gettime(CLOCK_REALTIME, &inode_pointer->mtime);
-	inode_pointer->extents = 1;
-	inode_pointer->dentry = 0;
-	(inode_pointer->extent)[0].start = block_index;
-	(inode_pointer->extent)[0].count = 1;
+	inode.mode = mode | S_IFDIR;
+	inode.size = 0; 									//currently no data inside the directory
+	inode.links = 1;									//AGAIN IDK HOW LINKS WORK NEED TO EDIT
+	inode.extents = 0;									//will not allocate any blocks until directory actually gets written into
+	clock_gettime(CLOCK_REALTIME, &inode.mtime);
+	memcpy((inode_start + (sizeof(a1fs_inode) * inode_index)), &inode, sizeof(a1fs_inode));
+	inode_bitmap[inode_index] = 1;
+	superblock->free_inodes_count -= 1;
 
-	//add the new inode to the inode table
-	unsigned char *inode_table = (unsigned char*)(disk + (A1FS_BLOCK_SIZE * superblock->inode_table));
-	inode_table = (unsigned char*)(inode_table + (sizeof(a1fs_inode) * inode_index));
-	memcpy(inode_table, inode_pointer, sizeof(a1fs_inode));
-
-	//find the parent directory and add in a new dentry representing this new directory
-	char *temp = malloc(sizeof(char) * strlen(path));													
-	strcpy(temp, path);													//copy path to temporary variable
-	char *final_slash = strrchr(temp, '/');								//get the pointer to the final "/"
-	char *directory_name = malloc(sizeof(char) * strlen(final_slash));						
-	strcpy(directory_name, (final_slash + sizeof(char)));				//copy the name of the directory to variable
-	*final_slash = '\0';												//assign value of final slash to '\0'
-
-	struct a1fs_inode *inodes = (struct a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
-	struct a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
-	struct a1fs_inode *target = (void *)0;
-	inode_from_path(root_inode, &target, temp, fs->image);
-
-	target->links += 1;																			//AGAIN, HOW DO LINKS WORK?
-	clock_gettime(CLOCK_REALTIME, &target->mtime);
-	target->dentry += 1;
-
-	struct a1fs_dentry dentry;
-	struct a1fs_dentry *dentry_pointer = &dentry;
-	dentry_pointer->ino = inode_index;
-	strcpy(dentry_pointer->name, directory_name);
-
-	//determine which extent block has free space for writing into
-	unsigned char *block_table = (unsigned char*)(disk + (A1FS_BLOCK_SIZE * superblock->data_region));
-	int written = 0;
-	//loop through array of extents in this inode
-	for (int i = 0; i < A1FS_EXTENTS_LENGTH; i++) {
-		if (i != A1FS_EXTENTS_LENGTH - 1) {
-			
-			//loop through the blocks of this one extent
-			for (int j = 0; (unsigned int)j < target->extent[i].count; j++) {
-				unsigned char *blocks = (unsigned char*)(block_table + (A1FS_BLOCK_SIZE * j));
-
-				//loop through the dentrys of this block
-				for (int k = 0; (unsigned int)k < A1FS_BLOCK_SIZE / sizeof(a1fs_dentry); k++) {
-					struct a1fs_dentry *directory_dentry = (struct a1fs_dentry*)(blocks + (sizeof(a1fs_dentry) * k));
-					if (directory_dentry->ino == 0) {
-						memcpy(directory_dentry, dentry_pointer, sizeof(a1fs_dentry));
-						written = 1;
-						break;
-					}
-				}
-				if (written) {
-					break;
-				}
-			}
-		}
-		else {																					//CASE WHERE AVAILABLE SPACE IS IN THE INDIRECT BLOCK
-
-			//loop through the indirect blocks
-			for (int j = 0; (unsigned int)j < target->extent[i].count; j++) {
-				unsigned char *blocks = (unsigned char*)(block_table + (A1FS_BLOCK_SIZE * j));
-
-				//loop through the extents inside the indirect blocks
-				for (int k = 0; (unsigned int)k < A1FS_BLOCK_SIZE / sizeof(a1fs_extent); k++) {
-					struct a1fs_extent *extents = (struct a1fs_extent*)(blocks + (sizeof(a1fs_extent) * k));
-
-					//loop through the blocks inside the extents
-					for (int l = 0; (unsigned int)l < extents->count; l++) {
-						unsigned char *extent_blocks = (unsigned char*)(block_table + (A1FS_BLOCK_SIZE * (extents->start + l)));
-
-						//loop through the dentrys inside the blocks
-						for (int m = 0; (unsigned int)m < A1FS_BLOCK_SIZE / sizeof(a1fs_dentry); m++) {
-							struct a1fs_dentry *directory_dentry = (struct a1fs_dentry*)(extent_blocks + (sizeof(a1fs_dentry) * m));
-							if (directory_dentry->ino == 0) {
-								memcpy(directory_dentry, dentry_pointer, sizeof(a1fs_dentry));
-								written = 1;
-								break;
-							}
-						}
-						if (written) {
-							break;
-						}
-					}
-					if (written) {
-						break;
-					}
-				}
-				if (written) {
-					break;
-				}
-			}
-		}
-		if (written) {
-			break;
-		}
-	}
-
-	if (written == 0) {
-		//int num = allocate_new_block(**inode);				//TODO CREATE A FUNCTION THAT ALLOCATES A NEW BLOCK TO AN INODE AND RETURNS THE INDEX OF THE EXTENT IT EDITED
-	}
-
-
-	//update_sizes(path, size);													//TODO CREATE A FUNCTION TO UPDATE SIZE OF DIRECTORIES
-	free(temp);
-	free(directory_name);
 	return 0;
 	return -ENOSYS;
 }
