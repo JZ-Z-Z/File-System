@@ -141,30 +141,40 @@ static bool mkfs(void *image, size_t size, mkfs_opts *opts)
 
 	// Calculate the block of the inodes table based on # of inodes.
 	int num_table_blocks = (opts->n_inodes * sizeof(a1fs_inode)) / A1FS_BLOCK_SIZE;
-	if ((opts->n_inodes * sizeof(a1fs_inode)) % A1FS_BLOCK_SIZE != 0){
-		num_table_blocks++;
-	}
+	num_table_blocks += ((opts->n_inodes * sizeof(a1fs_inode)) % A1FS_BLOCK_SIZE) / ((opts->n_inodes * sizeof(a1fs_inode)) % A1FS_BLOCK_SIZE);
 
 	sb->block_bitmap = 1;
 	sb->inode_bitmap = 2;
 	sb->inode_table = 3;
 	sb->data_region = sb->inode_table + num_table_blocks;
 
+	sb->free_blocks_count = size / A1FS_BLOCK_SIZE - 3 - num_table_blocks;
+	
+	sb->block_bitmap_span = sb->free_blocks_count / (A1FS_BLOCK_SIZE*8);
+    sb->block_bitmap_span += (sb->free_blocks_count % (A1FS_BLOCK_SIZE*8)) / (sb->free_blocks_count % (A1FS_BLOCK_SIZE*8));
+
+    sb->inode_bitmap_span = sb->inodes_count / (A1FS_BLOCK_SIZE*8);
+    sb->inode_bitmap_span += (sb->inodes_count % (A1FS_BLOCK_SIZE*8)) / (sb->inodes_count % (A1FS_BLOCK_SIZE*8));
+
+
 	// Create an empty root directory
+	mode_t mode = 0;
 	struct a1fs_inode *inodes = (struct a1fs_inode*)(image + A1FS_BLOCK_SIZE * sb->inode_table);
 	struct a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
-	root_inode->mode = A1FS_S_IFDIR;
+	root_inode->mode = mode | S_IFDIR;
 	root_inode->links = 2;
 	root_inode->extents = 1;
 	root_inode->dentry = 1;
 
-	// struct a1fs_dentry *root_entry = (struct a1fs_dentry*)(image + A1FS_BLOCK_SIZE*sb->data_region);
-	// root_entry->ino = A1FS_ROOT_INO;
-	// strncpy(root_entry->name, ".", A1FS_NAME_MAX);
+	(root_inode->extent)[0].start = 0;
+	(root_inode->extent)[0].count = 1;
+	unsigned char *extent_start = (unsigned char*)(image + (A1FS_BLOCK_SIZE*sb->data_region));
+	memset(extent_start, 0, A1FS_BLOCK_SIZE);
+
 	struct a1fs_dentry *test_entry = (struct a1fs_dentry*)(image + A1FS_BLOCK_SIZE*sb->data_region);
 	strncpy(test_entry->name, ".Trash", A1FS_NAME_MAX); 
 	struct a1fs_inode *test_inode = inodes + 1;
-	test_inode->mode = A1FS_S_IFREG;
+	test_inode->mode = mode | S_IFREG;
 	test_inode->links = 0;
 	test_inode->extents = 0;
 	test_inode->dentry = 0;
@@ -172,13 +182,17 @@ static bool mkfs(void *image, size_t size, mkfs_opts *opts)
 
 
 	test_entry->ino = 1;
-	(root_inode->extent)[0].start = 0;
-	(root_inode->extent)[0].count = 1;
-
 
 	root_inode->size = sizeof(a1fs_dentry)*2;
 
 	clock_gettime(CLOCK_REALTIME, &root_inode->mtime);
+
+	unsigned char *inode_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * sb->inode_bitmap)); 
+	unsigned char *block_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * sb->block_bitmap)); 
+	inode_bitmap[A1FS_ROOT_INO] = 1;
+	inode_bitmap[1] = 1;
+	block_bitmap[A1FS_ROOT_INO] = 1;
+	sb->free_inodes_count -= 1;
 
 	return true;
 }
