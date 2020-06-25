@@ -296,6 +296,32 @@ int find_available_space(void *image, int type) {
 	return -1;
 }
 
+// Initialize a new inode to the default parameters and provided mode.
+// TODO: links???
+void init_inode(struct a1fs_inode *inode, mode_t mode){
+	inode->mode = mode;
+	inode->size = 0; 									
+	inode->links = 1;									
+	inode->extents = 0;	
+
+	// Initialize the extents to be empty (count = 0).
+	for (int i = 0; i < A1FS_EXTENTS_LENGTH; i ++){
+		(inode->extent)[0].count = 0;
+	}
+
+	clock_gettime(CLOCK_REALTIME, &inode->mtime);
+}
+
+void init_extent(struct a1fs_extent *extent, int start, int count, void *image){
+	struct a1fs_superblock *superblock = (struct a1fs_superblock*)(image);
+	unsigned char *block_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * superblock->block_bitmap));
+
+	extent->start = start;
+	extent->count = count;
+	block_bitmap[start] = 1;
+	superblock->free_blocks_count -= 1;
+}
+
 
 /**
  * Allocates a new block for an a1fs_inode
@@ -309,7 +335,7 @@ int allocate_new_block(struct a1fs_inode **inode, void *image) {
 	struct a1fs_inode *modify = *inode;
 	struct a1fs_superblock *superblock = (struct a1fs_superblock*)(image);
 	unsigned char *block_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * superblock->block_bitmap));
-	unsigned char *blocks = (unsigned char*)(image + (A1FS_BLOCK_SIZE * superblock->data_region));
+	//unsigned char *blocks = (unsigned char*)(image + (A1FS_BLOCK_SIZE * superblock->data_region));
 
 	int block_index = find_available_space(image, 0);
 	if (block_index == -1) {											//since there are no available blocks left
@@ -319,7 +345,7 @@ int allocate_new_block(struct a1fs_inode **inode, void *image) {
 	// Loop over all the extents.
 	for (int i = 0; (unsigned int)i < A1FS_EXTENTS_LENGTH; i++) {
 		
-		if (i != A1FS_EXTENTS_LENGTH - 1) {
+		if (i != A1FS_IND_BLOCK) {
 			
 			if (modify->extent[i].count != 0) {
 				if (block_bitmap[modify->extent[i].start + modify->extent[i].count] == 0) {				//found a free block and can extend the extent
@@ -330,12 +356,8 @@ int allocate_new_block(struct a1fs_inode **inode, void *image) {
 				}
 			}
 			else {												//case where this extent is empty and was never assigned any blocks
-				struct a1fs_extent extent;
-				extent.start = block_index;
-				extent.count = 1;
-				modify->extent[i] = extent;
-				block_bitmap[block_index] = 1;
-				superblock->free_blocks_count -= 1;
+				init_extent(modify->extent + i, block_index, 1, image);
+				modify->extents += 1;
 				return i;
 			}
 		}
@@ -344,31 +366,24 @@ int allocate_new_block(struct a1fs_inode **inode, void *image) {
 			if ((modify->extent[A1FS_IND_BLOCK]).count == 0){
 				// We need to initialize the independent block.
 				int indirect_block_index = find_available_space(image, 0); 
-				(modify->extent[A1FS_IND_BLOCK]).start = indirect_block_index; 
-				(modify->extent[A1FS_IND_BLOCK]).count = 1;
-				block_bitmap[indirect_block_index] = 1; 
+				init_extent(modify->extent + A1FS_IND_BLOCK, indirect_block_index, 1, image);
 			}
-															//case where we need to allocate a new block in the indirect block
 
-			int extent_num = 10;								//variable keeping track of how many extents have been iterated over in indirect blocks
+			int extent_num = A1FS_IND_BLOCK;								//variable keeping track of how many extents have been iterated over in indirect blocks
 																//initialized to 10 to indicate indirect block
 			//loop through indirect blocks
 			for (int j = 0; (unsigned int)j < modify->extent[i].count; j++) {
-				unsigned char *indirect_blocks = (unsigned char*)(blocks + (A1FS_BLOCK_SIZE * (modify->extent[i].start + j)));
+				//unsigned char *indirect_blocks = (unsigned char*)(blocks + (A1FS_BLOCK_SIZE * (modify->extent[i].start + j)));
+				int indirect_block = superblock->data_region + modify->extent[i].start + j;
 
 				//loop through extents inside indirect blocks
 				for (int k = 0; (unsigned int)k < A1FS_BLOCK_SIZE / sizeof(a1fs_extent); k++) {
-					struct a1fs_extent *extent = (struct a1fs_extent*)(indirect_blocks + (sizeof(a1fs_extent) * k));
-					extent_num += 1;
+					//struct a1fs_extent *extent = (struct a1fs_extent*)(indirect_blocks + (sizeof(a1fs_extent) * k));
+					struct a1fs_extent *extent = (struct a1fs_extent*)(image + A1FS_BLOCK_SIZE*indirect_block + (sizeof(a1fs_extent)*k));
 
 					if (extent->count == 0) {					//case where this extent is empty and was never assigned any blocks
-						struct a1fs_extent save_extent;
-						struct a1fs_extent *save_extent_pointer = &save_extent;
-						save_extent_pointer->count = 1;
-						save_extent_pointer->start = block_index;
-						block_bitmap[block_index] = 1;
-						superblock->free_blocks_count -= 1;
-						memcpy(extent, save_extent_pointer, sizeof(a1fs_extent));
+						init_extent(extent, block_index, 1, image);
+						modify->extents += 1;
 						return extent_num;
 					}
 					else {
@@ -379,6 +394,7 @@ int allocate_new_block(struct a1fs_inode **inode, void *image) {
 							return extent_num;
 						}
 					}
+					extent_num += 1;
 				}
 			}
 			//if we reach this point without returning, should we even try to extend the indirect block extent?
@@ -493,7 +509,7 @@ static int a1fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 	int extents_count = 0;
 	int i = 0;
-	while (extents_count < dir->extents){
+	while (extents_count < target->extents){
 		if (i >= A1FS_IND_BLOCK){
 			// We are now looking in the indirect block.
 			int extent_location = A1FS_BLOCK_SIZE*(sb->data_region + ((target->extent)[A1FS_IND_BLOCK]).start) + (i-A1FS_IND_BLOCK)*sizeof(a1fs_extent);
@@ -536,22 +552,6 @@ static int a1fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	return -ENOSYS;
 }
 
-// Initialize a new inode to the default parameters and provided mode.
-// TODO: links???
-void init_inode(struct a1fs_inode *inode, mode_t mode){
-	inode->mode = mode;
-	inode->size = 0; 									
-	inode->links = 1;									
-	inode->extents = 0;	
-
-	// Initialize the extents to be empty (count = 0).
-	for (int i = 0; i < A1FS_EXTENTS_LENGTH; i ++){
-		(inode->extent)[0].count = 0;
-	}
-
-	clock_gettime(CLOCK_REALTIME, &inode->mtime);
-}
-
 
 /**
  * Create a directory.
@@ -580,9 +580,6 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	fs_ctx *fs = get_fs();
 
 	//TODO: create a directory at given path with given mode
-	(void)path;
-	(void)mode;
-	(void)fs;
 
 	struct a1fs_superblock *superblock = (struct a1fs_superblock*)(fs->image);
 	struct a1fs_inode *inodes = (struct a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
@@ -590,7 +587,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	//unsigned char *block_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->data_region));
 	//unsigned char *inode_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_table));
 	unsigned char *inode_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_bitmap)); 
-	unsigned char *block_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->block_bitmap)); 
+	//unsigned char *block_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->block_bitmap)); 
 
 	//check to see if there is space for an additional inode
 	if (superblock->free_inodes_count == 0) {
@@ -677,6 +674,27 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	// TODO: The existing extents had no space available, need to assign more space to the parent dir.
 	if (!created_dentry) {	
 		int extent_index = allocate_new_block(&parent_directory, fs->image);
+		if (extent_index == -1){
+			return -ENOSPC;
+		}
+
+		struct a1fs_dentry *new_entry;
+
+		// Check if the new block is part of an extent stored in the indirect block.
+		if (extent_index >= A1FS_IND_BLOCK){
+			int extent_block = (superblock->data_region + ((parent_directory->extent)[A1FS_IND_BLOCK]).start)*A1FS_BLOCK_SIZE;
+			struct a1fs_extent *extent = (struct a1fs_extent*)(fs->image + extent_block + sizeof(a1fs_extent)*(extent_index % A1FS_IND_BLOCK));
+
+			int entry_byte = (superblock->data_region + extent->start)*A1FS_BLOCK_SIZE;
+			new_entry = (struct a1fs_dentry*)(fs->image + entry_byte + (extent->count - 1)*A1FS_BLOCK_SIZE);
+		}
+		else {
+			int entry_byte = (superblock->data_region + ((parent_directory->extent)[extent_index]).start)*A1FS_BLOCK_SIZE;
+			new_entry = (struct a1fs_dentry*)(fs->image + entry_byte + (((parent_directory->extent)[extent_index]).count - 1)*A1FS_BLOCK_SIZE);
+		}
+
+		strcpy(new_entry->name, file_name);
+        new_entry->ino = inode_index;
 	}
 	
 	//create the inode for the new directory and save it to the inode table
