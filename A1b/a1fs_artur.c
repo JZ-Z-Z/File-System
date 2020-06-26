@@ -1006,7 +1006,7 @@ static int a1fs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
  * @param path  path to the file to remove.
  * @return      0 on success; -errno on error.
  */
-static int a1fs_unlink(const char *path)
+static int a1fs_unlink(const char *path)								//TODO same issue as rmdir
 {
 	fs_ctx *fs = get_fs();
 
@@ -1185,7 +1185,22 @@ static int a1fs_utimens(const char *path, const struct timespec tv[2])
 	(void)path;
 	(void)tv;
 	(void)fs;
-	return -ENOSYS;
+
+	struct a1fs_superblock *superblock = (struct a1fs_superblock*)(fs->image);
+	struct a1fs_inode *inodes = (struct a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
+	struct a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
+	struct a1fs_inode *target = (void *)0;
+	inode_from_path(root_inode, &target, path, fs->image);
+	
+	if (tv->tv_nsec == UTIME_NOW || tv == NULL) {				//change to current time
+		clock_gettime(CLOCK_REALTIME, &target->mtime);
+	}
+	else if (tv->tv_nsec != UTIME_OMIT) {						//change to time stored in struct
+		target->mtime.tv_sec = tv->tv_sec;
+		target->mtime.tv_nsec = tv->tv_nsec;
+	}
+
+	return 0;
 }
 
 /**
