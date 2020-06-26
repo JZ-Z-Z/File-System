@@ -749,7 +749,7 @@ static int a1fs_rmdir(const char *path)
 	inode_from_path(root_inode, &directory, path, fs->image);
 
 	//check if directory is empty or not
-	if (directory->size != 0) {
+	if (directory->size != 0 || directory->dentry != 0) {
 		return -ENOTEMPTY;
 	}
 
@@ -827,6 +827,7 @@ static int a1fs_rmdir(const char *path)
 								memset(curr_entry, 0, sizeof(a1fs_dentry));				//TODO change what data we set erased blocks to
 								superblock->free_inodes_count += 1;
 								removed = 1;
+								parent_directory->dentry -= 1;
 								break;
 							}
 						}
@@ -884,16 +885,14 @@ static int a1fs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	struct a1fs_superblock *superblock = (struct a1fs_superblock*)(fs->image);
 	struct a1fs_inode *inodes = (struct a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
 	struct a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
-	unsigned char *block_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->data_region));
-	unsigned char *inode_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_table));
 	unsigned char *inode_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_bitmap)); 
-
-	//check to see if there is available space for a new directory
+	
+	//check to see if there is space for an additional inode
 	if (superblock->free_inodes_count == 0) {
 		return -ENOSPC;
 	}
 
-	//find parent directory to create new file in
+	//find parent directory to insert new dentry in
 	struct a1fs_inode *parent_directory = (void *)0;
 	char path_copy[A1FS_NAME_MAX];
 	strcpy(path_copy, path);
@@ -901,97 +900,99 @@ static int a1fs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	*final_slash = '\0';
 	char file_name[A1FS_NAME_MAX];
 	strcpy(file_name, (final_slash + 1));
-	inode_from_path(root_inode, &parent_directory, path_copy, fs->image);
+	printf("Path to parent: %s File name: %s\n", path_copy, file_name);
 
-	//find a spot in one of the parent's directory blocks to create a new dentry in
+	// Base case for when we are creating a new dir in the root.
+	if (strlen(path_copy) == 0){
+		parent_directory = root_inode;
+	}
+	else {
+		inode_from_path(root_inode, &parent_directory, path_copy, fs->image);
+	}
+
+	//find place in parent directory to insert new dentry into
 	int created_dentry = 0;
 	int inode_index = find_available_space(fs->image, 1);
-	//loop through parent directory's extents
-	for (int i = 0; (unsigned int)i < A1FS_EXTENTS_LENGTH; i++) {
-		if ((unsigned int)i != A1FS_EXTENTS_LENGTH - 1) {
 
-			//loop through dentrys in extent blocks
-			for (int j = 0; (unsigned int)j < parent_directory->extent[i].count * A1FS_BLOCK_SIZE / sizeof(a1fs_dentry); j++) {
-				struct a1fs_dentry *dentry = (struct a1fs_dentry*)(block_start + (A1FS_BLOCK_SIZE * parent_directory->extent[i].start) + (sizeof(a1fs_dentry) * j));
+	// Look through the parent's existing extents for free space.
+	struct a1fs_extent *curr_extent;
+	int extents_count = 0;
+	int i = 0;
+	while (extents_count < parent_directory->extents){
+		if (i >= A1FS_IND_BLOCK){
+			// We are now looking in the indirect block.
+			int extent_location = A1FS_BLOCK_SIZE*(superblock->data_region + ((parent_directory->extent)[A1FS_IND_BLOCK]).start) + (i-A1FS_IND_BLOCK)*sizeof(a1fs_extent);
+			curr_extent = (struct a1fs_extent*)(fs->image + extent_location);
+		}
+		else{
+			// We are looking at the extent at index i in the extents array.
+			curr_extent = parent_directory->extent + i;
+		}
+		if (curr_extent->count > 0){
+	        // Loop through this entire extent (depending on extent length).
+			for (size_t j = 0; j < curr_extent->count; j++){
+				int curr_entry_block = superblock->data_region + curr_extent->start + j;
 
-				if (dentry->ino == 0) {			//found spot to place new dentry; might need to also check name
-					struct a1fs_dentry file;
-					strcpy(file.name, file_name);
-					file.ino = inode_index;
-					memcpy(dentry, &file, sizeof(a1fs_dentry));
-					created_dentry = 1;
+				// Loop through all the entries in this extent.
+				for (size_t k = 0; k < A1FS_BLOCK_SIZE/sizeof(a1fs_dentry); k++){
+						struct a1fs_dentry *curr_entry = (struct a1fs_dentry*)(fs->image + A1FS_BLOCK_SIZE*curr_entry_block + k*sizeof(a1fs_dentry));
+
+						// Check if this entry is not in use.
+						if ((curr_entry->ino == 0 && (curr_entry->name)[0] == '\0') || curr_entry == NULL){
+				            strcpy(curr_entry->name, file_name);
+				            curr_entry->ino = inode_index;
+				            created_dentry = 1;
+				            break;
+						}
+				}
+				if (created_dentry){
 					break;
 				}
 			}
-		}
-		else {		//case where no space available in direct blocks
-
-			//loop through extents inside indirect blocks
-			for (int j = 0; (unsigned int)j < (parent_directory->extent[i].count * A1FS_BLOCK_SIZE / sizeof(a1fs_extent)); j++) {
-				struct a1fs_extent *indirect_extent = (struct a1fs_extent*)(block_start + (A1FS_BLOCK_SIZE * parent_directory->extent[i].start) + (sizeof(a1fs_extent) * j));
-
-				//loop through dentrys inside extent
-				for (int k = 0; (unsigned int)k < indirect_extent->count * A1FS_BLOCK_SIZE / sizeof(a1fs_dentry); k++) {
-					struct a1fs_dentry *dentry = (struct a1fs_dentry*)(block_start + (A1FS_BLOCK_SIZE * indirect_extent->start) + (sizeof(a1fs_dentry) * k));
-
-					if (dentry->ino == 0) {			//found spot to place new dentry
-					struct a1fs_dentry file;
-					strcpy(file.name, file_name);
-					file.ino = inode_index;
-					memcpy(dentry, &file, sizeof(a1fs_dentry));
-					created_dentry = 1;
-					break;
-					}
-				}
-				if (created_dentry) {
-					break;
-				}
+			if (created_dentry) {
+				break;
 			}
+			extents_count++;
 		}
-		if (created_dentry) {
-			break;
-		}
+		i++;
 	}
 
-	//failed to create a new dentry possibly because there was no more space in the parent directory
-	if (!created_dentry) {
-		if (superblock->free_blocks_count == 0) {	//no space to allocate new block to the parent directory
+	// TODO: The existing extents had no space available, need to assign more space to the parent dir.
+	if (!created_dentry) {	
+		int extent_index = allocate_new_block(&parent_directory, fs->image);
+		if (extent_index == -1){
 			return -ENOSPC;
 		}
 
-		//allocate a new block into the directory to put in a new dentry for the new file
-		int status = allocate_new_block(&parent_directory, fs->image);
-		if (status == -1) {
-			return -ENOSPC;
-		}
+		struct a1fs_dentry *new_entry;
 
-		if (status == 10) {			//allocated block is in the indirect extent
+		// Check if the new block is part of an extent stored in the indirect block.
+		if (extent_index >= A1FS_IND_BLOCK){
+			int extent_block = (superblock->data_region + ((parent_directory->extent)[A1FS_IND_BLOCK]).start)*A1FS_BLOCK_SIZE;
+			struct a1fs_extent *extent = (struct a1fs_extent*)(fs->image + extent_block + sizeof(a1fs_extent)*(extent_index % A1FS_IND_BLOCK));
 
-			//TODO
-
+			int entry_byte = (superblock->data_region + extent->start)*A1FS_BLOCK_SIZE;
+			new_entry = (struct a1fs_dentry*)(fs->image + entry_byte + (extent->count - 1)*A1FS_BLOCK_SIZE);
 		}
 		else {
-			struct a1fs_dentry dentry;
-			dentry.ino = inode_index;
-			strcpy(dentry.name, file_name);
-			memcpy((block_start + (A1FS_BLOCK_SIZE * (parent_directory->extent[status].start + parent_directory->extent[status].count - 1))), &dentry, sizeof(a1fs_dentry));
+			int entry_byte = (superblock->data_region + ((parent_directory->extent)[extent_index]).start)*A1FS_BLOCK_SIZE;
+			new_entry = (struct a1fs_dentry*)(fs->image + entry_byte + (((parent_directory->extent)[extent_index]).count - 1)*A1FS_BLOCK_SIZE);
 		}
 
+		strcpy(new_entry->name, file_name);
+        new_entry->ino = inode_index;
 	}
+	
+	//create the inode for the new directory and save it to the inode table
+	struct a1fs_inode *inode = (struct a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE*superblock->inode_table + inode_index*sizeof(a1fs_inode));
+	init_inode(inode, mode);
 
-	//create the inode for the new file and save it to the inode table
-	struct a1fs_inode inode;
-	inode.mode = mode;
-	inode.size = 0; 									//currently no data inside the file
-	inode.links = 1;									//AGAIN IDK HOW LINKS WORK NEED TO EDIT
-	inode.extents = 0;									//will not allocate any blocks until file actually gets written into
-	clock_gettime(CLOCK_REALTIME, &inode.mtime);
-	memcpy((inode_start + (sizeof(a1fs_inode) * inode_index)), &inode, sizeof(a1fs_inode));
+	// Update
 	inode_bitmap[inode_index] = 1;
 	superblock->free_inodes_count -= 1;
-	
+	parent_directory->dentry++;
+
 	return 0;
-	return -ENOSYS;
 }
 
 /**
