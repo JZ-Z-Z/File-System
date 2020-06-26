@@ -728,7 +728,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
  * @param path  path to the directory to remove.
  * @return      0 on success; -errno on error.
  */
-static int a1fs_rmdir(const char *path)
+static int a1fs_rmdir(const char *path)						//TODO issue when maximum # of directories are made then removing the final one
 {
 	fs_ctx *fs = get_fs();
 
@@ -1014,97 +1014,115 @@ static int a1fs_unlink(const char *path)
 	(void)path;
 	(void)fs;
 	
-	//locate the path inode
 	struct a1fs_superblock *superblock = (struct a1fs_superblock*)(fs->image);
 	struct a1fs_inode *inodes = (struct a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
 	struct a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
-	struct a1fs_inode *target = (void *)0;
-	inode_from_path(root_inode, &target, path, fs->image);
+	unsigned char *inode_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_bitmap));
+	unsigned char *block_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->block_bitmap));
 
-	unsigned char *block_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->block_bitmap)); 
-	unsigned char *block_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->data_region));
-	//free the blocks that this inode owns
-	//loop through extent array in inode
-	for (int i = 0; (unsigned int)i < A1FS_EXTENTS_LENGTH; i++) {
-		if ((unsigned int)i != A1FS_EXTENTS_LENGTH - 1) {					
-			
-			//loop through blocks in the extents
-			for (int j = 0; (unsigned int)j < target->extent[i].count; j++) {
-				block_bitmap[target->extent[i].start + j] = 0;
-				superblock->free_blocks_count += 1;
-				memset((block_start + (A1FS_BLOCK_SIZE * (target->extent[i].start + j))), 0, A1FS_BLOCK_SIZE);
-			}
-		}
-		else {	//case where we need to free blocks in the indirect block
-
-			//loop through extents inside indirect blocks
-			for (int j = 0; (unsigned int)j < (target->extent[i].count * A1FS_BLOCK_SIZE / sizeof(a1fs_extent)); j++) {
-				struct a1fs_extent *indirect_extent = (struct a1fs_extent*)(block_start + (A1FS_BLOCK_SIZE * target->extent[i].start) + (sizeof(a1fs_extent) * j));
-
-				//loop through blocks inside indirect extent
-				for (int k = 0; (unsigned int)k < indirect_extent->count; k++) {
-					block_bitmap[indirect_extent->start + j] = 0;
-					superblock->free_blocks_count += 1;
-					memset((block_start + (A1FS_BLOCK_SIZE * (indirect_extent->start + j))), 0, A1FS_BLOCK_SIZE);
-				}
-			}
-		}
-	}
-
-	//locate the parent directory inode and remove the dentry and inode for this file
-	struct a1fs_inode *parent_directory = (void *)0;
+	//find the file to be removed
+	struct a1fs_inode *file = (void *)0;
 	char path_copy[A1FS_NAME_MAX];
 	strcpy(path_copy, path);
+	inode_from_path(root_inode, &file, path, fs->image);
+
+	//find the parent directory
+	struct a1fs_inode *parent_directory = (void *)0;
 	char *final_slash = strrchr(path_copy, '/');
 	*final_slash = '\0';
 	char file_name[A1FS_NAME_MAX];
 	strcpy(file_name, (final_slash + 1));
-	inode_from_path(root_inode, &parent_directory, path_copy, fs->image);
-	parent_directory->size -= target->size;														//MIGHT BE UNNECESSARY IF TRUNCATE GETS CALLED BY DEFAULT
 
-	unsigned char* inode_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_bitmap));
-	unsigned char* inode_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_table));
-	//loop through parent directory's extents
-	for (int i = 0; (unsigned int)i < A1FS_EXTENTS_LENGTH; i++) {
-		
-		if ((unsigned int)i != A1FS_EXTENTS_LENGTH - 1) {					
-			
-			//loop through dentrys in the blocks of the extent
-			for (int j = 0; (unsigned int)j < parent_directory->extent[i].count * A1FS_BLOCK_SIZE / sizeof(a1fs_dentry); j++) {
-				struct a1fs_dentry *dentry = (struct a1fs_dentry*)(block_start + (A1FS_BLOCK_SIZE * parent_directory->extent[i].start) + (sizeof(a1fs_dentry) * j));
-
-				if (!strcmp(dentry->name, file_name)) {
-					memset(inode_start + (sizeof(a1fs_inode) * (dentry->ino)), 0, sizeof(a1fs_inode));
-					inode_bitmap[dentry->ino] = 0;
-					memset(dentry, 0, sizeof(a1fs_dentry));
-					superblock->free_inodes_count += 1;
-					return 0;
-				}
-			}
-		}
-		else {	//case where dentry is located in indirect block
-
-			//loop through extents inside indirect blocks
-			for (int j = 0; (unsigned int)j < (parent_directory->extent[i].count * A1FS_BLOCK_SIZE / sizeof(a1fs_extent)); j++) {
-				struct a1fs_extent *indirect_extent = (struct a1fs_extent*)(block_start + (A1FS_BLOCK_SIZE * target->extent[i].start) + (sizeof(a1fs_extent) * j));
-
-				//loop through dentrys inside indirect extent
-				for (int k = 0; (unsigned int)k < indirect_extent->count * A1FS_BLOCK_SIZE / sizeof(a1fs_dentry); k++) {
-					struct a1fs_dentry *dentry = (struct a1fs_dentry*)(block_start + (A1FS_BLOCK_SIZE * indirect_extent->start) + (sizeof(a1fs_dentry) * k));
-
-					if (!strcmp(dentry->name, file_name)) {
-						memset(inode_start + (sizeof(a1fs_inode) * (dentry->ino)), 0, sizeof(a1fs_inode));
-						inode_bitmap[dentry->ino] = 0;
-						memset(dentry, 0, sizeof(a1fs_dentry));
-						superblock->free_inodes_count += 1;
-						return 0;
-					}
-				}
-			}
-		}
+	// Base case for when we are removing a file in the root.
+	if (strlen(path_copy) == 0){
+		parent_directory = root_inode;
+	}
+	else {
+		inode_from_path(root_inode, &parent_directory, path_copy, fs->image);
 	}
 
-	return -ENOSYS;			//should never reach here from assumption
+	// Look through the directory's existing extents to free space
+	struct a1fs_extent *curr_extent;
+	int extents_count = 0;
+	int i = 0;
+	while (extents_count < file->extents){
+		if (i >= A1FS_IND_BLOCK){
+			// We are now looking in the indirect block.
+			int extent_location = A1FS_BLOCK_SIZE*(superblock->data_region + ((file->extent)[A1FS_IND_BLOCK]).start) + (i-A1FS_IND_BLOCK)*sizeof(a1fs_extent);
+			curr_extent = (struct a1fs_extent*)(fs->image + extent_location);
+		}
+		else{
+			// We are looking at the extent at index i in the extents array.
+			curr_extent = file->extent + i;
+		}
+		if (curr_extent->count > 0){
+	        // Loop through this entire extent (depending on extent length).
+			for (size_t j = 0; j < curr_extent->count; j++){
+				int curr_entry_block = superblock->data_region + curr_extent->start + j;
+				block_bitmap[curr_entry_block] = 0;
+				memset((fs->image + (A1FS_BLOCK_SIZE * curr_entry_block)), 0, A1FS_BLOCK_SIZE);			// TODO change what data we set erased blocks to
+				superblock->free_blocks_count += 1;
+			}
+			extents_count++;
+		}
+		i++;
+	}
+
+	// Look through the parent directory's existing extents to locate the dentry for the removed file
+	extents_count = 0;
+	i = 0;
+	int removed = 0;
+	int inode_num = -1;
+	while (extents_count < parent_directory->extents){
+		if (i >= A1FS_IND_BLOCK){
+			// We are now looking in the indirect block.
+			int extent_location = A1FS_BLOCK_SIZE*(superblock->data_region + ((parent_directory->extent)[A1FS_IND_BLOCK]).start) + (i-A1FS_IND_BLOCK)*sizeof(a1fs_extent);
+			curr_extent = (struct a1fs_extent*)(fs->image + extent_location);
+		}
+		else{
+			// We are looking at the extent at index i in the extents array.
+			curr_extent = parent_directory->extent + i;
+		}
+		if (curr_extent->count > 0){
+	        // Loop through this entire extent (depending on extent length).
+			for (size_t j = 0; j < curr_extent->count; j++){
+				int curr_entry_block = superblock->data_region + curr_extent->start + j;
+
+				// Loop through all the entries in this extent.
+				for (size_t k = 0; k < A1FS_BLOCK_SIZE/sizeof(a1fs_dentry); k++){
+						struct a1fs_dentry *curr_entry = (struct a1fs_dentry*)(fs->image + A1FS_BLOCK_SIZE*curr_entry_block + k*sizeof(a1fs_dentry));
+
+						// Check if this entry is the removed directory's
+						if (curr_entry != NULL) {
+							if (!strcmp(curr_entry->name, file_name)) {
+								inode_num = curr_entry->ino;
+								inode_bitmap[curr_entry->ino] = 0;
+								memset(curr_entry, 0, sizeof(a1fs_dentry));				//TODO change what data we set erased blocks to
+								superblock->free_inodes_count += 1;
+								removed = 1;
+								parent_directory->dentry -= 1;
+								break;
+							}
+						}
+				}
+				if (removed){
+					break;
+				}
+			}
+			if (removed) {
+				break;
+			}
+			extents_count++;
+		}
+		i++;
+	}
+
+	//remove the directory inode from the inode table		
+	if (inode_num > 0) {
+		memset((fs->image + (A1FS_BLOCK_SIZE * superblock->inode_table) + (sizeof(a1fs_inode) * inode_num)), 0, sizeof(a1fs_inode));
+	}
+
+	return 0;
 }
 
 /**
