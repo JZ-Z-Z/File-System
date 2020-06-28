@@ -584,10 +584,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	struct a1fs_superblock *superblock = (struct a1fs_superblock*)(fs->image);
 	struct a1fs_inode *inodes = (struct a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
 	struct a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
-	//unsigned char *block_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->data_region));
-	//unsigned char *inode_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_table));
 	unsigned char *inode_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_bitmap)); 
-	//unsigned char *block_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->block_bitmap)); 
 
 	//check to see if there is space for an additional inode
 	if (superblock->free_inodes_count == 0) {
@@ -615,16 +612,6 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	//find place in parent directory to insert new dentry into
 	int created_dentry = 0;
 	int inode_index = find_available_space(fs->image, 1);
-
-	//FOR TESTING PURPOSES
-	// block_bitmap[10] = 1;
-	// parent_directory->extent[1].start = 10;
-	// parent_directory->extent[1].count = 1;
-	// parent_directory->extents++;
-	// // TODO: When we assign a new block we need to memset that block to all 0.
-	// unsigned char *extent_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE*(superblock->data_region + 10)));
-	// memset(extent_start, 0, A1FS_BLOCK_SIZE);
-
 
 	// Look through the parent's existing extents for free space.
 	struct a1fs_extent *curr_extent;
@@ -671,7 +658,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 		i++;
 	}
 
-	// TODO: The existing extents had no space available, need to assign more space to the parent dir.
+	//The existing extents had no space available, need to assign more space to the parent dir.
 	if (!created_dentry) {	
 		int extent_index = allocate_new_block(&parent_directory, fs->image);
 		if (extent_index == -1){
@@ -700,11 +687,6 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	//create the inode for the new directory and save it to the inode table
 	struct a1fs_inode *inode = (struct a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE*superblock->inode_table + inode_index*sizeof(a1fs_inode));
 	init_inode(inode, mode | S_IFDIR);
-	// inode->mode = mode | S_IFDIR;
-	// inode->size = 0; 									//currently no data inside the directory
-	// inode->links = 1;									//AGAIN IDK HOW LINKS WORK NEED TO EDIT
-	// inode->extents = 0;									//will not allocate any blocks until directory actually gets written into
-	// clock_gettime(CLOCK_REALTIME, &inode->mtime);
 
 	// Update
 	inode_bitmap[inode_index] = 1;
@@ -728,7 +710,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
  * @param path  path to the directory to remove.
  * @return      0 on success; -errno on error.
  */
-static int a1fs_rmdir(const char *path)						//TODO issue when maximum # of directories are made then removing the final one
+static int a1fs_rmdir(const char *path)						
 {
 	fs_ctx *fs = get_fs();
 
@@ -787,7 +769,7 @@ static int a1fs_rmdir(const char *path)						//TODO issue when maximum # of dire
 			for (size_t j = 0; j < curr_extent->count; j++){
 				int curr_entry_block = superblock->data_region + curr_extent->start + j;
 				block_bitmap[curr_entry_block] = 0;
-				memset((fs->image + (A1FS_BLOCK_SIZE * curr_entry_block)), 0, A1FS_BLOCK_SIZE);			// TODO change what data we set erased blocks to
+				memset((fs->image + (A1FS_BLOCK_SIZE * curr_entry_block)), 0, A1FS_BLOCK_SIZE);			
 				superblock->free_blocks_count += 1;
 			}
 			extents_count++;
@@ -824,7 +806,7 @@ static int a1fs_rmdir(const char *path)						//TODO issue when maximum # of dire
 							if (!strcmp(curr_entry->name, file_name)) {
 								inode_num = curr_entry->ino;
 								inode_bitmap[curr_entry->ino] = 0;
-								memset(curr_entry, 0, sizeof(a1fs_dentry));				//TODO change what data we set erased blocks to
+								memset(curr_entry, 0, sizeof(a1fs_dentry));				
 								superblock->free_inodes_count += 1;
 								removed = 1;
 								parent_directory->dentry -= 1;
@@ -1006,7 +988,7 @@ static int a1fs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
  * @param path  path to the file to remove.
  * @return      0 on success; -errno on error.
  */
-static int a1fs_unlink(const char *path)								//TODO same issue as rmdir
+static int a1fs_unlink(const char *path)								
 {
 	fs_ctx *fs = get_fs();
 
@@ -1060,7 +1042,7 @@ static int a1fs_unlink(const char *path)								//TODO same issue as rmdir
 			for (size_t j = 0; j < curr_extent->count; j++){
 				int curr_entry_block = superblock->data_region + curr_extent->start + j;
 				block_bitmap[curr_entry_block] = 0;
-				memset((fs->image + (A1FS_BLOCK_SIZE * curr_entry_block)), 0, A1FS_BLOCK_SIZE);			// TODO change what data we set erased blocks to
+				memset((fs->image + (A1FS_BLOCK_SIZE * curr_entry_block)), 0, A1FS_BLOCK_SIZE);			
 				superblock->free_blocks_count += 1;
 			}
 			extents_count++;
@@ -1097,7 +1079,7 @@ static int a1fs_unlink(const char *path)								//TODO same issue as rmdir
 							if (!strcmp(curr_entry->name, file_name)) {
 								inode_num = curr_entry->ino;
 								inode_bitmap[curr_entry->ino] = 0;
-								memset(curr_entry, 0, sizeof(a1fs_dentry));				//TODO change what data we set erased blocks to
+								memset(curr_entry, 0, sizeof(a1fs_dentry));				
 								superblock->free_inodes_count += 1;
 								removed = 1;
 								parent_directory->dentry -= 1;
@@ -1148,7 +1130,7 @@ static int a1fs_unlink(const char *path)								//TODO same issue as rmdir
  * @param to    new file path.
  * @return      0 on success; -errno on error.
  */
-static int a1fs_rename(const char *from, const char *to)					//TODO fix some "no more space" issues
+static int a1fs_rename(const char *from, const char *to)					
 {
 	fs_ctx *fs = get_fs();
 
@@ -1257,7 +1239,7 @@ static int a1fs_rename(const char *from, const char *to)					//TODO fix some "no
 								if (!strcmp(curr_entry->name, orig_name)) {
 									inode_num = curr_entry->ino;
 									inode_bitmap[curr_entry->ino] = 0;
-									memset(curr_entry, 0, sizeof(a1fs_dentry));				//TODO change what data we set erased blocks to
+									memset(curr_entry, 0, sizeof(a1fs_dentry));				
 									superblock->free_inodes_count += 1;
 									removed = 1;
 									orig_parent->dentry -= 1;
@@ -1297,7 +1279,7 @@ static int a1fs_rename(const char *from, const char *to)					//TODO fix some "no
 			dest_file = (void*)0;
 			inode_from_path(root_inode, &dest_file, to, fs->image);
 		}
-		else {															//to exists and is a directory
+		else {															//to exists and is a directory; using -T option
 			if (dest_file->size != 0 || dest_file->dentry != 0) {		//directory is not empty
 				return -ENOTEMPTY;
 			}
@@ -1337,7 +1319,7 @@ static int a1fs_rename(const char *from, const char *to)					//TODO fix some "no
 								if (!strcmp(curr_entry->name, orig_name)) {
 									inode_num = curr_entry->ino;
 									inode_bitmap[curr_entry->ino] = 0;
-									memset(curr_entry, 0, sizeof(a1fs_dentry));				//TODO change what data we set erased blocks to
+									memset(curr_entry, 0, sizeof(a1fs_dentry));				
 									superblock->free_inodes_count += 1;
 									removed = 1;
 									orig_parent->dentry -= 1;
