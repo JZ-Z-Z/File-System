@@ -322,6 +322,62 @@ void init_extent(struct a1fs_extent *extent, int start, int count, void *image){
 	superblock->free_blocks_count -= 1;
 }
 
+// Return -1 on error and return index of extent on success;
+int append_new_block(struct a1fs_inode *inode, void *image){
+
+	struct a1fs_superblock *sb = (struct a1fs_superblock*)(image);
+	unsigned char *block_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * sb->block_bitmap));
+
+
+	int block_index = find_available_space(image, 0);
+	if (block_index == -1){
+		return -1;
+	}
+
+	int extents_count = 0;
+	int i = 0;
+	struct a1fs_extent *curr_extent;
+	while (extents_count < inode->extents){
+		if (i >= A1FS_IND_BLOCK){
+			// We are now looking in the indirect block.
+			int extent_location = A1FS_BLOCK_SIZE*(sb->data_region + ((inode->extent)[A1FS_IND_BLOCK]).start) + (i-A1FS_IND_BLOCK)*sizeof(a1fs_extent);
+			curr_extent = (struct a1fs_extent*)(image + extent_location);
+		}
+		else{
+			// We are looking at the extent at index i in the extents array.
+			curr_extent = inode->extent + i;
+		}
+		if (curr_extent->count > 0){
+			// Check if we can extend the last extent.
+			if (extents_count == inode->extents - 1){
+				if (block_bitmap[curr_extent->start + curr_extent->count] == 0) {				//found a free block and can extend the extent
+					block_bitmap[curr_extent->start + curr_extent->count] = 1;
+					curr_extent->count += 1;
+					sb->free_blocks_count -= 1;
+					return i;
+				}
+			}
+			extents_count++;
+		}
+		i++;
+	}
+
+	// Two possible cases: 1. Could not extend last extent. 2. Inode has no extents.
+	// In both scenarios we need to create a new extent at the end. 
+
+	if (i >= A1FS_IND_BLOCK){
+		int extent_location = A1FS_BLOCK_SIZE*(sb->data_region + ((inode->extent)[A1FS_IND_BLOCK]).start) + (i-A1FS_IND_BLOCK)*sizeof(a1fs_extent);
+		curr_extent = (struct a1fs_extent*)(image + extent_location);
+	}
+	else{
+		// We are looking at the extent at index i in the extents array.
+		curr_extent = inode->extent + i;
+	}
+
+	init_extent(curr_extent, block_index, 1, image);
+	inode->extents += 1;
+	return i;
+}
 
 /**
  * Allocates a new block for an a1fs_inode
@@ -692,6 +748,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	inode_bitmap[inode_index] = 1;
 	superblock->free_inodes_count -= 1;
 	parent_directory->dentry++;
+	parent_directory->size += sizeof(a1fs_dentry);
 
 	return 0;
 }
@@ -1464,7 +1521,9 @@ static int a1fs_read(const char *path, char *buf, size_t size, off_t offset,
 	size_t byte_count = 0;
 	int offset_count = 0;
 	a1fs_extent *curr_extent;
-	for (int i = 0; i < target->extents; i++){
+	int extents_count = 0;
+	int i = 0;
+	while (extents_count < target->extents){
 		if (i >= A1FS_IND_BLOCK){
 			// We are now looking in the indirect block.
 			int extent_location = A1FS_BLOCK_SIZE*(sb->data_region + ((target->extent)[A1FS_IND_BLOCK]).start) + (i-A1FS_IND_BLOCK)*sizeof(a1fs_extent);
@@ -1474,27 +1533,31 @@ static int a1fs_read(const char *path, char *buf, size_t size, off_t offset,
 			// We are looking at the extent at index i in the extents array.
 			curr_extent = target->extent + i;
 		}
-		// Loop through this entire extent (depending on extent length).
-		for (size_t j = 0; j < curr_extent->count; j++){
-			int curr_block = sb->data_region + curr_extent->start + j;
+		if (curr_extent->count > 0){
+			// Loop through this entire extent (depending on extent length).
+			for (size_t j = 0; j < curr_extent->count; j++){
+				int curr_block = sb->data_region + curr_extent->start + j;
 
-			// Loop through all the bytes in this block.
-			for (size_t k = 0; k < A1FS_BLOCK_SIZE; k++){
-				// First we must get to the start of the read range.
-				if (offset_count < offset){
-					offset_count++;
-				}
-				// Check if we still need to read more bytes.
-				else if (byte_count < size){
-					buf[byte_count] = *((char*)(fs->image + A1FS_BLOCK_SIZE*curr_block + k));
-					byte_count++;
-				}
-				// We have read the number of bytes requested, return success.
-				else {
-					return byte_count;
+				// Loop through all the bytes in this block.
+				for (size_t k = 0; k < A1FS_BLOCK_SIZE; k++){
+					// First we must get to the start of the read range.
+					if (offset_count < offset){
+						offset_count++;
+					}
+					// Check if we still need to read more bytes.
+					else if (byte_count < size){
+						buf[byte_count] = *((unsigned char*)(fs->image + A1FS_BLOCK_SIZE*curr_block + k));
+						byte_count++;
+					}
+					// We have read the number of bytes requested, return success.
+					else {
+						return byte_count;
+					}
 				}
 			}
+			extents_count++;
 		}
+		i++;
 	}
 
 	// We reached EOF.
@@ -1537,12 +1600,108 @@ static int a1fs_write(const char *path, const char *buf, size_t size,
 
 	//TODO: write data from the buffer into the file at given offset, possibly
 	// "zeroing out" the uninitialized range
-	(void)path;
 	(void)buf;
 	(void)size;
 	(void)offset;
-	(void)fs;
-	return -ENOSYS;
+
+	// Setup all of the usefull variables we will need.
+	struct a1fs_superblock *sb = (struct a1fs_superblock*)(fs->image);
+	struct a1fs_inode *inodes = (struct a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * sb->inode_table);
+	struct a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
+
+	// Get the target file that we will be reading, we do not need to check the return value of 'inode_from_path'
+	// because we are assuming it has already beed checked by a1fs_getattr().
+	struct a1fs_inode *target = (void *)0;
+	inode_from_path(root_inode, &target, path, fs->image);
+
+	// Loop through the file's extents
+	size_t byte_count = 0;
+	int offset_count = 0;
+	a1fs_extent *curr_extent;
+	int extents_count = 0;
+	int i = 0;
+	while (extents_count < target->extents){
+		if (i >= A1FS_IND_BLOCK){
+			// We are now looking in the indirect block.
+			int extent_location = A1FS_BLOCK_SIZE*(sb->data_region + ((target->extent)[A1FS_IND_BLOCK]).start) + (i-A1FS_IND_BLOCK)*sizeof(a1fs_extent);
+			curr_extent = (struct a1fs_extent*)(fs->image + extent_location);
+		}
+		else{
+			// We are looking at the extent at index i in the extents array.
+			curr_extent = target->extent + i;
+		}
+		if (curr_extent->count > 0){
+			// Loop through this entire extent (depending on extent length).
+			for (size_t j = 0; j < curr_extent->count; j++){
+				int curr_block = sb->data_region + curr_extent->start + j;
+				unsigned char *byte = (unsigned char*)(fs->image + A1FS_BLOCK_SIZE*curr_block);
+
+				// Loop through all the bytes in this block.
+				for (size_t k = 0; k < A1FS_BLOCK_SIZE; k++){
+					// First we must get to the start of the read range.
+					if (offset_count < offset){
+						offset_count++;
+					}
+					// Check if we still need to write more bytes.
+					else if (byte_count < size){
+						byte[k] = buf[byte_count];
+						byte_count++;
+					}
+					// We have read the number of bytes requested, return success.
+					else {
+						target->size += byte_count;
+						printf("Wrote %ld bytes\n", byte_count);
+						return byte_count;
+					}
+				}
+			}
+			extents_count++;
+		}
+		i++;
+	}
+
+	// We reached EOF.
+
+	// Check if the offset was beyong EOF.
+	if (byte_count == 0){
+		// The file must be extended.
+		 if (allocate_new_block(&target, fs->image) == -1){
+		 	return -ENOSPC;
+		 }
+		 return a1fs_write(path, buf, size, offset, fi);
+	}
+
+	// Check if we still have bytes to write.
+	while (byte_count < size){
+		int extent_index = append_new_block(target, fs->image);
+		if (extent_index== -1){
+			return -ENOSPC;
+		}
+		unsigned char *byte;
+
+		// Check if the new block is part of an extent stored in the indirect block.
+		if (extent_index >= A1FS_IND_BLOCK){
+			int extent_block = (sb->data_region + ((target->extent)[A1FS_IND_BLOCK]).start)*A1FS_BLOCK_SIZE;
+			struct a1fs_extent *extent = (struct a1fs_extent*)(fs->image + extent_block + sizeof(a1fs_extent)*(extent_index % A1FS_IND_BLOCK));
+
+			int new_block = (sb->data_region + extent->start)*A1FS_BLOCK_SIZE;
+			byte = (unsigned char*)(fs->image + new_block + (extent->count - 1)*A1FS_BLOCK_SIZE);
+		}
+		// The new block is in the direct extents array.
+		else {
+			int new_block = (sb->data_region + ((target->extent)[extent_index]).start)*A1FS_BLOCK_SIZE;
+			byte = (unsigned char*)(fs->image + new_block + (((target->extent)[extent_index]).count - 1)*A1FS_BLOCK_SIZE);
+		}
+
+		// Fill this new block with the remaining data.
+		for (int i = 0; i < A1FS_BLOCK_SIZE; i++){
+			byte[i] = buf[byte_count];
+			byte_count++;
+		}
+	}
+	target->size += byte_count;
+	printf("Wrote %ld bytes\n", byte_count);
+	return byte_count;
 }
 
 
