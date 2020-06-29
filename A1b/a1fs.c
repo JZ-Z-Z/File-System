@@ -128,6 +128,19 @@ static int a1fs_statfs(const char *path, struct statvfs *st)
 	return -ENOSYS;
 }
 
+int get_bm(unsigned char *bm, int index){
+	 return (bm[index / 8] & (1 << (index % 8))) != 0;
+}
+
+void set_bm(unsigned char *bm, int index, char value){
+	if (value == 1){
+		bm[index / 8] |= 1 << (index % 8);
+	}
+	else {
+		bm[index / 8] &= ~(1 << (index % 8));
+	}
+}
+
 int inode_by_name(a1fs_inode *dir, a1fs_inode **file, char *name, void *image){
 	a1fs_superblock *sb = (a1fs_superblock*)(image);
 	a1fs_extent *curr_extent;
@@ -250,17 +263,17 @@ int find_available_space(void *image, int type) {
 			inode_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * (superblock->inode_bitmap + i)));
 
 			if ((unsigned int)i == superblock->inode_bitmap_span - 1) {
-				for (int j = 0; (unsigned int)j < superblock->inodes_count - (i * A1FS_BLOCK_SIZE); j++) {
-					if (!inode_bitmap[j]) {
-						index = i * A1FS_BLOCK_SIZE + j;
+				for (int j = 0; (unsigned int)j < superblock->inodes_count - (i * A1FS_BLOCK_SIZE * 8); j++) {
+					if (!get_bm(inode_bitmap, j)) {
+						index = i * A1FS_BLOCK_SIZE*8 + j;
 						return index;
 					}
 				}
 			}
 			else {
-				for (int j = 0; (unsigned int)j < 4096; j++) {
-					if (!inode_bitmap[j]) {
-						index = i * A1FS_BLOCK_SIZE + j;
+				for (int j = 0; (unsigned int)j < A1FS_BLOCK_SIZE*8; j++) {
+					if (!get_bm(inode_bitmap, j)) {
+						index = i * A1FS_BLOCK_SIZE*8 + j;
 						return index;
 					}
 				}
@@ -275,17 +288,17 @@ int find_available_space(void *image, int type) {
 
 			//alternate for loop for when we are on the final bitmap block which doesn't necessarily have all 4096 bits
 			if ((unsigned int)i == superblock->block_bitmap_span - 1) {
-				for (int j = 0; (unsigned int)j < superblock->blocks_count - (i * A1FS_BLOCK_SIZE); j++) {
-					if (!block_bitmap[j]) {
-						index = i * A1FS_BLOCK_SIZE + j;
+				for (int j = 0; (unsigned int)j < superblock->blocks_count - (i * A1FS_BLOCK_SIZE * 8); j++) {
+					if (!get_bm(block_bitmap, j)){
+						index = i * A1FS_BLOCK_SIZE*8 + j;
 						return index;
 					}
 				}
 			}
 			else {
-				for (int j = 0; (unsigned int)j < 4096; j++) {
-					if (!block_bitmap[j]) {
-						index = i * A1FS_BLOCK_SIZE + j;
+				for (int j = 0; (unsigned int)j < A1FS_BLOCK_SIZE*8; j++) {
+					if (!get_bm(block_bitmap, j)){
+						index = i * A1FS_BLOCK_SIZE*8 + j;
 						return index;
 					}
 				}
@@ -318,7 +331,7 @@ void init_extent(a1fs_extent *extent, int start, int count, void *image){
 
 	extent->start = start;
 	extent->count = count;
-	block_bitmap[start] = 1;
+	set_bm(block_bitmap, start, 1);
 	superblock->free_blocks_count -= 1;
 }
 
@@ -351,8 +364,8 @@ int append_new_block(a1fs_inode *inode, void *image){
 		if (curr_extent->count > 0){
 			// Check if we can extend the last extent.
 			if (extents_count == inode->extents - 1){
-				if (block_bitmap[curr_extent->start + curr_extent->count] == 0) {				//found a free block and can extend the extent
-					block_bitmap[curr_extent->start + curr_extent->count] = 1;
+				if (get_bm(block_bitmap, curr_extent->start + curr_extent->count) == 0) {
+					set_bm(block_bitmap, curr_extent->start + curr_extent->count, 1);
 					curr_extent->count += 1;
 					sb->free_blocks_count -= 1;
 					return i;
@@ -406,8 +419,8 @@ int allocate_new_block(a1fs_inode **inode, void *image) {
 		if (i != A1FS_IND_BLOCK) {
 			
 			if (modify->extent[i].count != 0) {
-				if (block_bitmap[modify->extent[i].start + modify->extent[i].count] == 0) {				//found a free block and can extend the extent
-					block_bitmap[modify->extent[i].start + modify->extent[i].count] = 1;
+				if (get_bm(block_bitmap, modify->extent[i].start + modify->extent[i].count) == 0) {
+					set_bm(block_bitmap, modify->extent[i].start + modify->extent[i].count, 1);
 					modify->extent[i].count += 1;
 					superblock->free_blocks_count -= 1;
 					return i;
@@ -445,8 +458,8 @@ int allocate_new_block(a1fs_inode **inode, void *image) {
 						return extent_num;
 					}
 					else {
-						if (block_bitmap[extent->start + extent->count] == 0) {
-							block_bitmap[extent->start + extent->count] = 1;
+						if (get_bm(block_bitmap, extent->start + extent->count) == 0){
+							set_bm(block_bitmap, extent->start + extent->count, 1);
 							extent->count += 1;
 							superblock->free_blocks_count -= 1;
 							return extent_num;
@@ -511,7 +524,7 @@ static int a1fs_getattr(const char *path, struct stat *st)
 	int ret = inode_from_path(root_inode, &target, path,fs->image);
 	if (ret == 0){
 		st->st_mode = target->mode;
-		st->st_nlink = 2255525;
+		st->st_nlink = target->links;
 		st->st_size = target->size;
 		st->st_blocks = target->size / 512;
 		st->st_mtim = target->mtime;
@@ -674,15 +687,6 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	int created_dentry = 0;
 	int inode_index = find_available_space(fs->image, 1);
 
-	//FOR TESTING PURPOSES
-	// block_bitmap[10] = 1;
-	// parent_directory->extent[1].start = 10;
-	// parent_directory->extent[1].count = 1;
-	// parent_directory->extents++;
-	// // TODO: When we assign a new block we need to memset that block to all 0.
-	// unsigned char *extent_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE*(superblock->data_region + 10)));
-	// memset(extent_start, 0, A1FS_BLOCK_SIZE);
-
 
 	// Look through the parent's existing extents for free space.
 	a1fs_extent *curr_extent;
@@ -758,14 +762,9 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	//create the inode for the new directory and save it to the inode table
 	a1fs_inode *inode = (a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE*superblock->inode_table + inode_index*sizeof(a1fs_inode));
 	init_inode(inode, mode | S_IFDIR);
-	// inode->mode = mode | S_IFDIR;
-	// inode->size = 0; 									//currently no data inside the directory
-	// inode->links = 1;									//AGAIN IDK HOW LINKS WORK NEED TO EDIT
-	// inode->extents = 0;									//will not allocate any blocks until directory actually gets written into
-	// clock_gettime(CLOCK_REALTIME, &inode->mtime);
 
 	// Update
-	inode_bitmap[inode_index] = 1;
+	set_bm(inode_bitmap, inode_index, 1);
 	superblock->free_inodes_count -= 1;
 	parent_directory->dentry++;
 	parent_directory->size += sizeof(a1fs_dentry);
@@ -845,7 +844,7 @@ static int a1fs_rmdir(const char *path)						//TODO issue when maximum # of dire
 	        // Loop through this entire extent (depending on extent length).
 			for (size_t j = 0; j < curr_extent->count; j++){
 				int curr_entry_block = superblock->data_region + curr_extent->start + j;
-				block_bitmap[curr_entry_block] = 0;
+				set_bm(block_bitmap, curr_entry_block, 0);
 				memset((fs->image + (A1FS_BLOCK_SIZE * curr_entry_block)), 0, A1FS_BLOCK_SIZE);			// TODO change what data we set erased blocks to
 				superblock->free_blocks_count += 1;
 			}
@@ -882,7 +881,7 @@ static int a1fs_rmdir(const char *path)						//TODO issue when maximum # of dire
 						if (curr_entry != NULL) {
 							if (!strcmp(curr_entry->name, file_name)) {
 								inode_num = curr_entry->ino;
-								inode_bitmap[curr_entry->ino] = 0;
+								set_bm(inode_bitmap, curr_entry->ino, 0);
 								memset(curr_entry, 0, sizeof(a1fs_dentry));				//TODO change what data we set erased blocks to
 								superblock->free_inodes_count += 1;
 								removed = 1;
@@ -1048,7 +1047,7 @@ static int a1fs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	init_inode(inode, mode);
 
 	// Update
-	inode_bitmap[inode_index] = 1;
+	set_bm(inode_bitmap, inode_index, 1);
 	superblock->free_inodes_count -= 1;
 	parent_directory->dentry++;
 	parent_directory->size += sizeof(a1fs_dentry);
@@ -1120,7 +1119,7 @@ static int a1fs_unlink(const char *path)								//TODO same issue as rmdir
 	        // Loop through this entire extent (depending on extent length).
 			for (size_t j = 0; j < curr_extent->count; j++){
 				int curr_entry_block = superblock->data_region + curr_extent->start + j;
-				block_bitmap[curr_entry_block] = 0;
+				set_bm(block_bitmap, curr_entry_block, 0);
 				memset((fs->image + (A1FS_BLOCK_SIZE * curr_entry_block)), 0, A1FS_BLOCK_SIZE);			// TODO change what data we set erased blocks to
 				superblock->free_blocks_count += 1;
 			}
@@ -1157,7 +1156,7 @@ static int a1fs_unlink(const char *path)								//TODO same issue as rmdir
 						if (curr_entry != NULL) {
 							if (!strcmp(curr_entry->name, file_name)) {
 								inode_num = curr_entry->ino;
-								inode_bitmap[curr_entry->ino] = 0;
+								set_bm(inode_bitmap, curr_entry->ino, 0);
 								memset(curr_entry, 0, sizeof(a1fs_dentry));				//TODO change what data we set erased blocks to
 								superblock->free_inodes_count += 1;
 								removed = 1;
@@ -1317,7 +1316,7 @@ static int a1fs_rename(const char *from, const char *to)
 							if (curr_entry != NULL) {
 								if (!strcmp(curr_entry->name, orig_name)) {
 									inode_num = curr_entry->ino;
-									inode_bitmap[curr_entry->ino] = 0;
+									set_bm(inode_bitmap, curr_entry->ino, 0);
 									memset(curr_entry, 0, sizeof(a1fs_dentry));				
 									superblock->free_inodes_count += 1;
 									removed = 1;
@@ -1397,7 +1396,7 @@ static int a1fs_rename(const char *from, const char *to)
 							if (curr_entry != NULL) {
 								if (!strcmp(curr_entry->name, orig_name)) {
 									inode_num = curr_entry->ino;
-									inode_bitmap[curr_entry->ino] = 0;
+									set_bm(inode_bitmap, curr_entry->ino, 0);
 									memset(curr_entry, 0, sizeof(a1fs_dentry));				
 									superblock->free_inodes_count += 1;
 									removed = 1;

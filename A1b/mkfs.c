@@ -151,11 +151,11 @@ static bool mkfs(void *image, size_t size, mkfs_opts *opts)
 	sb->free_blocks_count = size / A1FS_BLOCK_SIZE - 3 - num_table_blocks;
 	sb->blocks_count = sb->free_blocks_count;
 	
-	sb->block_bitmap_span = sb->free_blocks_count / (A1FS_BLOCK_SIZE);
-    sb->block_bitmap_span += (sb->free_blocks_count % (A1FS_BLOCK_SIZE)) / (sb->free_blocks_count % (A1FS_BLOCK_SIZE));
+	sb->block_bitmap_span = sb->free_blocks_count / (A1FS_BLOCK_SIZE*8);
+    sb->block_bitmap_span += (sb->free_blocks_count % (A1FS_BLOCK_SIZE*8)) / (sb->free_blocks_count % (A1FS_BLOCK_SIZE*8));
 
-    sb->inode_bitmap_span = sb->inodes_count / (A1FS_BLOCK_SIZE);
-    sb->inode_bitmap_span += (sb->inodes_count % (A1FS_BLOCK_SIZE)) / (sb->inodes_count % (A1FS_BLOCK_SIZE));
+    sb->inode_bitmap_span = sb->inodes_count / (A1FS_BLOCK_SIZE*8);
+    sb->inode_bitmap_span += (sb->inodes_count % (A1FS_BLOCK_SIZE*8)) / (sb->inodes_count % (A1FS_BLOCK_SIZE*8));
 
 
 	// Create an empty root directory
@@ -172,7 +172,7 @@ static bool mkfs(void *image, size_t size, mkfs_opts *opts)
 	clock_gettime(CLOCK_REALTIME, &root_inode->mtime);
 
 	unsigned char *inode_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * sb->inode_bitmap)); 
-	inode_bitmap[A1FS_ROOT_INO] = 1;
+	inode_bitmap[0] |= 1 << (0 % 8);
 	sb->free_inodes_count -= 1;
 
 	return true;
