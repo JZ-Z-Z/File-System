@@ -22,6 +22,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "a1fs.h"
 #include "map.h"
@@ -104,8 +105,11 @@ static bool parse_args(int argc, char *argv[], mkfs_opts *opts)
 static bool a1fs_is_present(void *image)
 {
 	//TODO: check if the image already contains a valid a1fs superblock
-	(void)image;
-	return true;
+	struct a1fs_superblock *sb = (struct a1fs_superblock*)(image);
+	if (sb->magic == A1FS_MAGIC){
+		return true;
+	}
+	return false;
 }
 
 
@@ -122,11 +126,56 @@ static bool a1fs_is_present(void *image)
  */
 static bool mkfs(void *image, size_t size, mkfs_opts *opts)
 {
-	//TODO: initialize the superblock and create an empty root directory
-	(void)image;
-	(void)size;
-	(void)opts;
-	return false;
+	// Check if given image size can support a superblock, block_bm, inode_bm, atleast one 
+	// data block, and the provided number of inodes.
+	if (size < (4*A1FS_BLOCK_SIZE + opts->n_inodes*sizeof(a1fs_inode))){
+		return false;
+	}
+
+	//initialize the superblock and create an empty root directory
+	struct a1fs_superblock *sb = (struct a1fs_superblock*)(image);
+	sb->magic = A1FS_MAGIC;
+	sb->size = size;
+	sb->inodes_count = opts->n_inodes;
+	sb->free_inodes_count = opts->n_inodes;
+
+	// Calculate the block of the inodes table based on # of inodes.
+	int num_table_blocks = (opts->n_inodes * sizeof(a1fs_inode)) / A1FS_BLOCK_SIZE;
+	num_table_blocks += ((opts->n_inodes * sizeof(a1fs_inode)) % A1FS_BLOCK_SIZE) / ((opts->n_inodes * sizeof(a1fs_inode)) % A1FS_BLOCK_SIZE);
+
+	sb->block_bitmap = 1;
+	sb->inode_bitmap = 2;
+	sb->inode_table = 3;
+	sb->data_region = sb->inode_table + num_table_blocks;
+
+	sb->free_blocks_count = size / A1FS_BLOCK_SIZE - 3 - num_table_blocks;
+	sb->blocks_count = sb->free_blocks_count;
+	
+	sb->block_bitmap_span = sb->free_blocks_count / (A1FS_BLOCK_SIZE);
+    sb->block_bitmap_span += (sb->free_blocks_count % (A1FS_BLOCK_SIZE)) / (sb->free_blocks_count % (A1FS_BLOCK_SIZE));
+
+    sb->inode_bitmap_span = sb->inodes_count / (A1FS_BLOCK_SIZE);
+    sb->inode_bitmap_span += (sb->inodes_count % (A1FS_BLOCK_SIZE)) / (sb->inodes_count % (A1FS_BLOCK_SIZE));
+
+
+	// Create an empty root directory
+	mode_t mode = 0;
+	struct a1fs_inode *inodes = (struct a1fs_inode*)(image + A1FS_BLOCK_SIZE * sb->inode_table);
+	struct a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
+	root_inode->mode = mode | S_IFDIR;
+	root_inode->links = 2;
+	root_inode->extents = 0;
+	root_inode->dentry = 0;
+
+	root_inode->size = sizeof(a1fs_dentry)*0;
+
+	clock_gettime(CLOCK_REALTIME, &root_inode->mtime);
+
+	unsigned char *inode_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * sb->inode_bitmap)); 
+	inode_bitmap[A1FS_ROOT_INO] = 1;
+	sb->free_inodes_count -= 1;
+
+	return true;
 }
 
 
