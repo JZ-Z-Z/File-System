@@ -34,10 +34,17 @@
  */
 #define A1FS_BLOCK_SIZE 4096
 
-/** Block number (block pointer) type. */
+/*
+ * Creation modes for inode.
+ */
+#define A1FS_S_IFLNK 0xA000 /* symbolic link */
+#define A1FS_S_IFREG 0x8000 /* regular file */
+#define A1FS_S_IFDIR 0x4000 /* directory */
+
+/* Block number (block pointer) type. */
 typedef uint32_t a1fs_blk_t;
 
-/** Inode number type. */
+/* Inode number type. */
 typedef uint32_t a1fs_ino_t;
 
 /* The index of the first data block that is not reserved
@@ -60,9 +67,14 @@ typedef struct a1fs_superblock {
 	unsigned int free_inodes_count;  /* Number of free inodes */
 	unsigned int free_blocks_count;  /* Number of free data blocks */
 
-	unsigned int   block_bitmap;      /* Blocks bitmap block */
-	unsigned int   inode_bitmap;      /* Inodes bitmap block */
-	unsigned int   inode_table;       /* Inodes table block */
+	// Block indexes starting from 0. Superblock is block index 0.
+	unsigned int block_bitmap;      /* Blocks bitmap block */
+	unsigned int inode_bitmap;      /* Inodes bitmap block */
+	unsigned int inode_table;       /* Inodes table block */
+	unsigned int data_region;       /* Data region starting block */ 
+
+	unsigned int block_bitmap_span; /* The number of blocks the block bitmap spans */
+	unsigned int inode_bitmap_span; /* The number of blocks the inode bitmap spans */ 
 
 } a1fs_superblock;
 
@@ -84,7 +96,12 @@ typedef struct a1fs_extent {
 #define A1FS_IND_BLOCK 10
 
 /* The index of the reserved root inode */
-#define A1FS_ROOT_INO 1
+#define A1FS_ROOT_INO 0
+
+/* The length of the inode extents array */
+#define A1FS_EXTENTS_LENGTH 11
+
+#define A1FS_NUM_EXTENTS 512
 
 
 /** a1fs inode. */
@@ -114,9 +131,9 @@ typedef struct a1fs_inode {
 	struct timespec mtime;
 
 	//TODO
-	unsigned int extents;      /* Extents count */
-	unsigned int free_extents; /* Available extents */
-	a1fs_extent extent[11]; /* Pointers to extents */
+	int extents;      /* Extents count */
+	int dentry; /* Dir entry count (only if inode is a directory) */
+	a1fs_extent extent[A1FS_EXTENTS_LENGTH]; /* Pointers to extents */
 	// extent[0-9] are direct, extent[10] is Single Indirect
 
 	//NOTE: You might have to add padding (e.g. a dummy char array field) at the
