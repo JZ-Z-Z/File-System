@@ -132,7 +132,7 @@ static bool mkfs(void *image, size_t size, mkfs_opts *opts)
 		return false;
 	}
 
-	//initialize the superblock and create an empty root directory
+	// initialize the superblock and create an empty root directory
 	struct a1fs_superblock *sb = (struct a1fs_superblock*)(image);
 	sb->magic = A1FS_MAGIC;
 	sb->size = size;
