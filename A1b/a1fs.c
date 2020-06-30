@@ -383,7 +383,7 @@ void init_extent(a1fs_extent *extent, int start, int count, void *image){
  * @param image		the disk image
  * @return			-1 on failure, index of modified extent array on success
  */
-int append_new_block(a1fs_inode *inode, void *image){
+int allocate_new_block(a1fs_inode *inode, void *image, int append){
 
 	a1fs_superblock *sb = (a1fs_superblock*)(image);
 	unsigned char *block_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * sb->block_bitmap));
@@ -397,8 +397,21 @@ int append_new_block(a1fs_inode *inode, void *image){
 	int extents_count = 0;
 	int i = 0;
 	a1fs_extent *curr_extent;
-	while (extents_count < inode->extents){
+	while (1){
+		if (append && extents_count >= inode->extents){
+			break;
+		}
+		if (i >= A1FS_EXTENTS_LENGTH){
+			break;
+		}
 		if (i >= A1FS_IND_BLOCK){
+			// Need to check if the indirect block has been initialized.
+			if ((inode->extent[A1FS_IND_BLOCK]).count == 0){
+				// We need to initialize the independent block.
+				int indirect_block_index = find_available_space(image, 0); 
+				init_extent(inode->extent + A1FS_IND_BLOCK, indirect_block_index, 1, image);
+			}
+
 			// We are now looking in the indirect block.
 			int extent_location = A1FS_BLOCK_SIZE*(sb->data_region + ((inode->extent)[A1FS_IND_BLOCK]).start) + (i-A1FS_IND_BLOCK)*sizeof(a1fs_extent);
 			curr_extent = (a1fs_extent*)(image + extent_location);
@@ -407,7 +420,8 @@ int append_new_block(a1fs_inode *inode, void *image){
 			// We are looking at the extent at index i in the extents array.
 			curr_extent = inode->extent + i;
 		}
-		if (curr_extent->count > 0){
+
+		if (append){
 			// Check if we can extend the last extent.
 			if (extents_count == inode->extents - 1){
 				if (get_bm(block_bitmap, curr_extent->start + curr_extent->count) == 0) {
@@ -417,6 +431,23 @@ int append_new_block(a1fs_inode *inode, void *image){
 					return i;
 				}
 			}
+		}
+		else {
+			if (curr_extent->count != 0) {
+				if (get_bm(block_bitmap, curr_extent->start + curr_extent->count) == 0) {
+					set_bm(block_bitmap, curr_extent->start + curr_extent->count, 1);
+					curr_extent->count += 1;
+					sb->free_blocks_count -= 1;
+					return i;
+				}
+			}
+			else {												//case where this extent is empty and was never assigned any blocks
+				init_extent(curr_extent, block_index, 1, image);
+				inode->extents += 1;
+				return i;
+			}
+		}
+		if (curr_extent->count > 0){
 			extents_count++;
 		}
 		i++;
@@ -424,6 +455,11 @@ int append_new_block(a1fs_inode *inode, void *image){
 
 	// Two possible cases: 1. Could not extend last extent. 2. Inode has no extents.
 	// In both scenarios we need to create a new extent at the end. 
+
+	// Check if we have run out of extents.
+	if (i >= A1FS_EXTENTS_LENGTH){
+		return -1;
+	}
 
 	// Check if the new extent will be in the indirect block.
 	if (i >= A1FS_IND_BLOCK){
@@ -437,6 +473,7 @@ int append_new_block(a1fs_inode *inode, void *image){
 
 	init_extent(curr_extent, block_index, 1, image);
 	inode->extents += 1;
+	sb->free_blocks_count -= 1;
 	return i;
 }
 
@@ -446,9 +483,10 @@ int append_new_block(a1fs_inode *inode, void *image){
  * 
  * @param inode	the inode to give a new block in
  * @param image the disk image
+ * @param append a boolean value if we want to append the new block or not
  * @return 		the index of the edited extent; -1 on error (e.g. no space available)
  */
-int allocate_new_block(a1fs_inode **inode, void *image) {
+int old_allocate_new_block(a1fs_inode **inode, void *image, int append) {
 
 	a1fs_inode *modify = *inode;
 	a1fs_superblock *superblock = (a1fs_superblock*)(image);
@@ -459,23 +497,31 @@ int allocate_new_block(a1fs_inode **inode, void *image) {
 		return -1;
 	}
 
+	int extents_count = 0;
 	// Loop over all the extents.
 	for (int i = 0; (unsigned int)i < A1FS_EXTENTS_LENGTH; i++) {
 		
 		if (i != A1FS_IND_BLOCK) {
-			
-			if (modify->extent[i].count != 0) {
-				if (get_bm(block_bitmap, modify->extent[i].start + modify->extent[i].count) == 0) {
-					set_bm(block_bitmap, modify->extent[i].start + modify->extent[i].count, 1);
-					modify->extent[i].count += 1;
-					superblock->free_blocks_count -= 1;
+			if (modify->extent[i].count != 0){
+				extents_count++;
+			}
+			if (!append || extents_count == modify->extents){
+				if (modify->extent[i].count != 0) {
+					if (get_bm(block_bitmap, modify->extent[i].start + modify->extent[i].count) == 0) {
+						set_bm(block_bitmap, modify->extent[i].start + modify->extent[i].count, 1);
+						modify->extent[i].count += 1;
+						superblock->free_blocks_count -= 1;
+						return i;
+					}
+					if (!append){
+						break;
+					}
+				}
+				else {												//case where this extent is empty and was never assigned any blocks
+					init_extent(modify->extent + i, block_index, 1, image);
+					modify->extents += 1;
 					return i;
 				}
-			}
-			else {												//case where this extent is empty and was never assigned any blocks
-				init_extent(modify->extent + i, block_index, 1, image);
-				modify->extents += 1;
-				return i;
 			}
 		}
 		else {	
@@ -498,20 +544,28 @@ int allocate_new_block(a1fs_inode **inode, void *image) {
 					//a1fs_extent *extent = (a1fs_extent*)(indirect_blocks + (sizeof(a1fs_extent) * k));
 					a1fs_extent *extent = (a1fs_extent*)(image + A1FS_BLOCK_SIZE*indirect_block + (sizeof(a1fs_extent)*k));
 
-					if (extent->count == 0) {					//case where this extent is empty and was never assigned any blocks
-						init_extent(extent, block_index, 1, image);
-						modify->extents += 1;
-						return extent_num;
+					if (extent->count != 0){
+						extents_count++;
 					}
-					else {
-						if (get_bm(block_bitmap, extent->start + extent->count) == 0){
-							set_bm(block_bitmap, extent->start + extent->count, 1);
-							extent->count += 1;
-							superblock->free_blocks_count -= 1;
+					if (!append || extents_count == modify->extents){
+						if (extent->count == 0) {					//case where this extent is empty and was never assigned any blocks
+							init_extent(extent, block_index, 1, image);
+							modify->extents += 1;
 							return extent_num;
 						}
+						else {
+							if (get_bm(block_bitmap, extent->start + extent->count) == 0){
+								set_bm(block_bitmap, extent->start + extent->count, 1);
+								extent->count += 1;
+								superblock->free_blocks_count -= 1;
+								return extent_num;
+							}
+							if (!append){
+								
+							}
+						}
+						extent_num += 1;
 					}
-					extent_num += 1;
 				}
 			}
 			//if we reach this point without returning, should we even try to extend the indirect block extent?
@@ -770,7 +824,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	// The existing extents had no space available, need to assign more space to the parent dir.
 	if (!created_dentry) {	
 		// Check if we can extend an existing extent, or create a new extent in the parent dir.
-		int extent_index = allocate_new_block(&parent_directory, fs->image);
+		int extent_index = allocate_new_block(parent_directory, fs->image, 0);
 		if (extent_index == -1){
 			return -ENOSPC;
 		}
@@ -804,6 +858,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	set_bm(inode_bitmap, inode_index, 1);
 	superblock->free_inodes_count -= 1;
 	parent_directory->dentry++;
+	parent_directory->links++;
 	parent_directory->size += sizeof(a1fs_dentry);
 
 	return 0;
@@ -1045,7 +1100,7 @@ static int a1fs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 
 	//The existing extents had no space available, need to assign more space to the parent dir.
 	if (!created_dentry) {	
-		int extent_index = allocate_new_block(&parent_directory, fs->image);
+		int extent_index = allocate_new_block(parent_directory, fs->image, 0);
 		if (extent_index == -1){
 			return -ENOSPC;
 		}
@@ -1569,7 +1624,7 @@ static int a1fs_truncate(const char *path, off_t size)
 		// We need to extend the file to have enough space for the given size.
 		else {
 			while (byte_count < size){
-				int extent_index = append_new_block(target, fs->image);
+				int extent_index = allocate_new_block(target, fs->image, 1);
 				if (extent_index== -1){
 					return -ENOSPC;
 				}
@@ -1828,7 +1883,7 @@ static int a1fs_write(const char *path, const char *buf, size_t size,
 	// Check if the offset was beyong EOF.
 	if (byte_count == 0){
 		// The file must be extended.
-		 if (allocate_new_block(&target, fs->image) == -1){
+		 if (allocate_new_block(target, fs->image, 0) == -1){
 		 	return -ENOSPC;
 		 }
 		 return a1fs_write(path, buf, size, offset, fi);
@@ -1836,7 +1891,7 @@ static int a1fs_write(const char *path, const char *buf, size_t size,
 
 	// Check if we still have bytes to write.
 	while (byte_count < size){
-		int extent_index = append_new_block(target, fs->image);
+		int extent_index = allocate_new_block(target, fs->image, 1);
 		if (extent_index== -1){
 			return -ENOSPC;
 		}
