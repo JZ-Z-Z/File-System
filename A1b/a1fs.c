@@ -112,8 +112,6 @@ static int a1fs_statfs(const char *path, struct statvfs *st)
 	memset(st, 0, sizeof(*st));
 	st->f_bsize   = A1FS_BLOCK_SIZE;
 	st->f_frsize  = A1FS_BLOCK_SIZE;
-	//TODO: fill in the rest of required fields based on the information stored
-	// in the superblock
 	a1fs_superblock *sb = (a1fs_superblock*)(fs->image);
 	st->f_namemax = A1FS_NAME_MAX;
 	st->f_blocks = sb->size / A1FS_BLOCK_SIZE;
@@ -128,10 +126,24 @@ static int a1fs_statfs(const char *path, struct statvfs *st)
 	return -ENOSYS;
 }
 
+/**
+ * Return an integer indicating whether this bit in the bitmap is 1
+ * 
+ * @param bm		the bitmap
+ * @param index		the index of the bit
+ * @return 			1 if bit is 1; otherwise 0
+ */
 int get_bm(unsigned char *bm, int index){
 	 return (bm[index / 8] & (1 << (index % 8))) != 0;
 }
 
+/**
+ * Set the bit at index in bm to the value value
+ * 
+ * @param bm		the bitmap
+ * @param index		the index of the bit
+ * @param value		the value to set the bit to
+ */
 void set_bm(unsigned char *bm, int index, char value){
 	if (value == 1){
 		bm[index / 8] |= 1 << (index % 8);
@@ -141,6 +153,16 @@ void set_bm(unsigned char *bm, int index, char value){
 	}
 }
 
+/**
+ * Find the inode given by name inside the directory inode dir. Modifies
+ * file by setting it to the inode given by name. Return 0 on success, 1 on failure
+ * 
+ * @param	dir		the directory that should contain the inode specified by name
+ * @param	file	the inode struct to be modified and set to the inode specified by name
+ * @param	name	the name of the inode
+ * @param	image	the disk image
+ * @return			0 on success, 1 on failure 
+ */
 int inode_by_name(a1fs_inode *dir, a1fs_inode **file, char *name, void *image){
 	a1fs_superblock *sb = (a1fs_superblock*)(image);
 	a1fs_extent *curr_extent;
@@ -191,7 +213,16 @@ int inode_by_name(a1fs_inode *dir, a1fs_inode **file, char *name, void *image){
 	return 1;
 }
 
-// Returns 0 if success or errors on fail.
+/**
+ * Find the inode given by path inside the directory inode dir. Modifies
+ * file by setting it to the inode given by name. Return 0 on success, 1 on failure 
+ * 
+ * @param dir		the directory that should contain the inode specified by path
+ * @param file		the inode struct to be modified
+ * @param path		the path of the inode
+ * @param image		the disk iage
+ * @return 			0 on success; 1 on failure
+ */
 int inode_from_path(a1fs_inode *dir, a1fs_inode **file, const char *path, void *image){
 	// Extract dir/file names from path one by one.
 	int start = 0;
@@ -309,8 +340,12 @@ int find_available_space(void *image, int type) {
 	return -1;
 }
 
-// Initialize a new inode to the default parameters and provided mode.
-// TODO: links???
+/**
+ * Initialize a new inode to the default parameters and provided mode
+ * 
+ * @param inode		the inode to be modified
+ * @param mode		the mode for the inode
+ */
 void init_inode(a1fs_inode *inode, mode_t mode){
 	inode->mode = mode;
 	inode->size = 0; 									
@@ -325,6 +360,14 @@ void init_inode(a1fs_inode *inode, mode_t mode){
 	clock_gettime(CLOCK_REALTIME, &inode->mtime);
 }
 
+/**
+ * Initialize a new extent 
+ * 
+ * @param extent	the extent to be modified
+ * @param start		the starting block number of this extent
+ * @param count		the number of blocks this extent has
+ * @param image		the disk image
+ */
 void init_extent(a1fs_extent *extent, int start, int count, void *image){
 	a1fs_superblock *superblock = (a1fs_superblock*)(image);
 	unsigned char *block_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * superblock->block_bitmap));
@@ -335,8 +378,13 @@ void init_extent(a1fs_extent *extent, int start, int count, void *image){
 	superblock->free_blocks_count -= 1;
 }
 
-
-// Return -1 on error and return index of extent on success;
+/**
+ * Append a new block to an inode
+ * 
+ * @param inode		the inode to be modified
+ * @param image		the disk image
+ * @return			-1 on failure, index of modified extent array on success
+ */
 int append_new_block(a1fs_inode *inode, void *image){
 
 	a1fs_superblock *sb = (a1fs_superblock*)(image);
@@ -406,7 +454,6 @@ int allocate_new_block(a1fs_inode **inode, void *image) {
 	a1fs_inode *modify = *inode;
 	a1fs_superblock *superblock = (a1fs_superblock*)(image);
 	unsigned char *block_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * superblock->block_bitmap));
-	//unsigned char *blocks = (unsigned char*)(image + (A1FS_BLOCK_SIZE * superblock->data_region));
 
 	int block_index = find_available_space(image, 0);
 	if (block_index == -1) {											//since there are no available blocks left
@@ -650,15 +697,10 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 {
 	fs_ctx *fs = get_fs();
 
-	//TODO: create a directory at given path with given mode
-
 	a1fs_superblock *superblock = (a1fs_superblock*)(fs->image);
 	a1fs_inode *inodes = (a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
 	a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
-	//unsigned char *block_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->data_region));
-	//unsigned char *inode_start = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_table));
 	unsigned char *inode_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->inode_bitmap)); 
-	//unsigned char *block_bitmap = (unsigned char*)(fs->image + (A1FS_BLOCK_SIZE * superblock->block_bitmap)); 
 
 	//check to see if there is space for an additional inode
 	if (superblock->free_inodes_count == 0) {
@@ -733,7 +775,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 		i++;
 	}
 
-	// TODO: The existing extents had no space available, need to assign more space to the parent dir.
+	//The existing extents had no space available, need to assign more space to the parent dir.
 	if (!created_dentry) {	
 		int extent_index = allocate_new_block(&parent_directory, fs->image);
 		if (extent_index == -1){
@@ -786,13 +828,9 @@ static int a1fs_mkdir(const char *path, mode_t mode)
  * @param path  path to the directory to remove.
  * @return      0 on success; -errno on error.
  */
-static int a1fs_rmdir(const char *path)						//TODO issue when maximum # of directories are made then removing the final one
+static int a1fs_rmdir(const char *path)						
 {
 	fs_ctx *fs = get_fs();
-
-	//TODO: remove the directory at given path (only if it's empty)
-	(void)path;
-	(void)fs;
 
 	a1fs_superblock *superblock = (a1fs_superblock*)(fs->image);
 	a1fs_inode *inodes = (a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
@@ -845,7 +883,7 @@ static int a1fs_rmdir(const char *path)						//TODO issue when maximum # of dire
 			for (size_t j = 0; j < curr_extent->count; j++){
 				int curr_entry_block = superblock->data_region + curr_extent->start + j;
 				set_bm(block_bitmap, curr_entry_block, 0);
-				memset((fs->image + (A1FS_BLOCK_SIZE * curr_entry_block)), 0, A1FS_BLOCK_SIZE);			// TODO change what data we set erased blocks to
+				memset((fs->image + (A1FS_BLOCK_SIZE * curr_entry_block)), 0, A1FS_BLOCK_SIZE);
 				superblock->free_blocks_count += 1;
 			}
 			extents_count++;
@@ -882,7 +920,7 @@ static int a1fs_rmdir(const char *path)						//TODO issue when maximum # of dire
 							if (!strcmp(curr_entry->name, file_name)) {
 								inode_num = curr_entry->ino;
 								set_bm(inode_bitmap, curr_entry->ino, 0);
-								memset(curr_entry, 0, sizeof(a1fs_dentry));				//TODO change what data we set erased blocks to
+								memset(curr_entry, 0, sizeof(a1fs_dentry));	
 								superblock->free_inodes_count += 1;
 								removed = 1;
 								parent_directory->dentry -= 1;
@@ -935,11 +973,6 @@ static int a1fs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	(void)fi;// unused
 	assert(S_ISREG(mode));
 	fs_ctx *fs = get_fs();
-
-	//TODO: create a file at given path with given mode
-	(void)path;
-	(void)mode;
-	(void)fs;
 
 	a1fs_superblock *superblock = (a1fs_superblock*)(fs->image);
 	a1fs_inode *inodes = (a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
@@ -1016,7 +1049,7 @@ static int a1fs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 		i++;
 	}
 
-	// TODO: The existing extents had no space available, need to assign more space to the parent dir.
+	//The existing extents had no space available, need to assign more space to the parent dir.
 	if (!created_dentry) {	
 		int extent_index = allocate_new_block(&parent_directory, fs->image);
 		if (extent_index == -1){
@@ -1066,13 +1099,9 @@ static int a1fs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
  * @param path  path to the file to remove.
  * @return      0 on success; -errno on error.
  */
-static int a1fs_unlink(const char *path)								//TODO same issue as rmdir
+static int a1fs_unlink(const char *path)
 {
 	fs_ctx *fs = get_fs();
-
-	//TODO: remove the file at given path
-	(void)path;
-	(void)fs;
 	
 	a1fs_superblock *superblock = (a1fs_superblock*)(fs->image);
 	a1fs_inode *inodes = (a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
@@ -1120,7 +1149,7 @@ static int a1fs_unlink(const char *path)								//TODO same issue as rmdir
 			for (size_t j = 0; j < curr_extent->count; j++){
 				int curr_entry_block = superblock->data_region + curr_extent->start + j;
 				set_bm(block_bitmap, curr_entry_block, 0);
-				memset((fs->image + (A1FS_BLOCK_SIZE * curr_entry_block)), 0, A1FS_BLOCK_SIZE);			// TODO change what data we set erased blocks to
+				memset((fs->image + (A1FS_BLOCK_SIZE * curr_entry_block)), 0, A1FS_BLOCK_SIZE);
 				superblock->free_blocks_count += 1;
 			}
 			extents_count++;
@@ -1157,7 +1186,7 @@ static int a1fs_unlink(const char *path)								//TODO same issue as rmdir
 							if (!strcmp(curr_entry->name, file_name)) {
 								inode_num = curr_entry->ino;
 								set_bm(inode_bitmap, curr_entry->ino, 0);
-								memset(curr_entry, 0, sizeof(a1fs_dentry));				//TODO change what data we set erased blocks to
+								memset(curr_entry, 0, sizeof(a1fs_dentry));	
 								superblock->free_inodes_count += 1;
 								removed = 1;
 								parent_directory->dentry -= 1;
@@ -1211,12 +1240,6 @@ static int a1fs_unlink(const char *path)								//TODO same issue as rmdir
 static int a1fs_rename(const char *from, const char *to)
 {
 	fs_ctx *fs = get_fs();
-
-	//TODO: move the inode (file or directory) at given source path to the
-	// destination path, according to the description above
-	(void)from;
-	(void)to;
-	(void)fs;
 
 	if (!strcmp(from, to)) {			//are the same files; no need to modify anything
 		return 0;
@@ -1447,13 +1470,6 @@ static int a1fs_utimens(const char *path, const struct timespec tv[2])
 {
 	fs_ctx *fs = get_fs();
 
-	//TODO: update the modification timestamp (mtime) in the inode for given
-	// path with either the time passed as argument or the current time,
-	// according to the utimensat man page
-	(void)path;
-	(void)tv;
-	(void)fs;
-
 	a1fs_superblock *superblock = (a1fs_superblock*)(fs->image);
 	a1fs_inode *inodes = (a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * superblock->inode_table);
 	a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
@@ -1660,8 +1676,6 @@ static int a1fs_read(const char *path, char *buf, size_t size, off_t offset,
 	(void)fi;// unused
 	fs_ctx *fs = get_fs();
 
-	//TODO: read data from the file at given offset into the buffer
-
 	// Setup all of the usefull variables we will need.
 	a1fs_superblock *sb = (a1fs_superblock*)(fs->image);
 	a1fs_inode *inodes = (a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * sb->inode_table);
@@ -1752,12 +1766,6 @@ static int a1fs_write(const char *path, const char *buf, size_t size,
 {
 	(void)fi;// unused
 	fs_ctx *fs = get_fs();
-
-	//TODO: write data from the buffer into the file at given offset, possibly
-	// "zeroing out" the uninitialized range
-	(void)buf;
-	(void)size;
-	(void)offset;
 
 	// Setup all of the usefull variables we will need.
 	a1fs_superblock *sb = (a1fs_superblock*)(fs->image);
