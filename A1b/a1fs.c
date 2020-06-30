@@ -376,11 +376,11 @@ void init_extent(a1fs_extent *extent, int start, int count, void *image){
 }
 
 /**
- * Append (add to the end) a new block to an inode. Either extending the last extent or
- * creating a new extent at the back.
+ * Allocates a new block for an a1fs_inode or append (add to the end) a new block to an inode.
  * 
  * @param inode		the inode to be modified
  * @param image		the disk image
+ * @param append a boolean value if we want to append the new block or not
  * @return			-1 on failure, index of modified extent array on success
  */
 int allocate_new_block(a1fs_inode *inode, void *image, int append){
@@ -428,6 +428,7 @@ int allocate_new_block(a1fs_inode *inode, void *image, int append){
 					set_bm(block_bitmap, curr_extent->start + curr_extent->count, 1);
 					curr_extent->count += 1;
 					sb->free_blocks_count -= 1;
+					printf("APPENDING\n");
 					return i;
 				}
 			}
@@ -438,6 +439,7 @@ int allocate_new_block(a1fs_inode *inode, void *image, int append){
 					set_bm(block_bitmap, curr_extent->start + curr_extent->count, 1);
 					curr_extent->count += 1;
 					sb->free_blocks_count -= 1;
+					printf("ALLOCATING\n");
 					return i;
 				}
 			}
@@ -463,6 +465,13 @@ int allocate_new_block(a1fs_inode *inode, void *image, int append){
 
 	// Check if the new extent will be in the indirect block.
 	if (i >= A1FS_IND_BLOCK){
+		// Need to check if the indirect block has been initialized.
+		if ((inode->extent[A1FS_IND_BLOCK]).count == 0){
+			// We need to initialize the independent block.
+			int indirect_block_index = find_available_space(image, 0); 
+			init_extent(inode->extent + A1FS_IND_BLOCK, indirect_block_index, 1, image);
+		}
+
 		int extent_location = A1FS_BLOCK_SIZE*(sb->data_region + ((inode->extent)[A1FS_IND_BLOCK]).start) + (i-A1FS_IND_BLOCK)*sizeof(a1fs_extent);
 		curr_extent = (a1fs_extent*)(image + extent_location);
 	}
@@ -478,102 +487,6 @@ int allocate_new_block(a1fs_inode *inode, void *image, int append){
 }
 
 
-/**
- * Allocates a new block for an a1fs_inode
- * 
- * @param inode	the inode to give a new block in
- * @param image the disk image
- * @param append a boolean value if we want to append the new block or not
- * @return 		the index of the edited extent; -1 on error (e.g. no space available)
- */
-int old_allocate_new_block(a1fs_inode **inode, void *image, int append) {
-
-	a1fs_inode *modify = *inode;
-	a1fs_superblock *superblock = (a1fs_superblock*)(image);
-	unsigned char *block_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * superblock->block_bitmap));
-
-	int block_index = find_available_space(image, 0);
-	if (block_index == -1) {											//since there are no available blocks left
-		return -1;
-	}
-
-	int extents_count = 0;
-	// Loop over all the extents.
-	for (int i = 0; (unsigned int)i < A1FS_EXTENTS_LENGTH; i++) {
-		
-		if (i != A1FS_IND_BLOCK) {
-			if (modify->extent[i].count != 0){
-				extents_count++;
-			}
-			if (!append || extents_count == modify->extents){
-				if (modify->extent[i].count != 0) {
-					if (get_bm(block_bitmap, modify->extent[i].start + modify->extent[i].count) == 0) {
-						set_bm(block_bitmap, modify->extent[i].start + modify->extent[i].count, 1);
-						modify->extent[i].count += 1;
-						superblock->free_blocks_count -= 1;
-						return i;
-					}
-					if (!append){
-						break;
-					}
-				}
-				else {												//case where this extent is empty and was never assigned any blocks
-					init_extent(modify->extent + i, block_index, 1, image);
-					modify->extents += 1;
-					return i;
-				}
-			}
-		}
-		else {	
-			// Need to check if the indirect block has been initialized.
-			if ((modify->extent[A1FS_IND_BLOCK]).count == 0){
-				// We need to initialize the independent block.
-				int indirect_block_index = find_available_space(image, 0); 
-				init_extent(modify->extent + A1FS_IND_BLOCK, indirect_block_index, 1, image);
-			}
-
-			int extent_num = A1FS_IND_BLOCK;								//variable keeping track of how many extents have been iterated over in indirect blocks
-																//initialized to 10 to indicate indirect block
-			//loop through indirect blocks
-			for (int j = 0; (unsigned int)j < modify->extent[i].count; j++) {
-				//unsigned char *indirect_blocks = (unsigned char*)(blocks + (A1FS_BLOCK_SIZE * (modify->extent[i].start + j)));
-				int indirect_block = superblock->data_region + modify->extent[i].start + j;
-
-				//loop through extents inside indirect blocks
-				for (int k = 0; (unsigned int)k < A1FS_BLOCK_SIZE / sizeof(a1fs_extent); k++) {
-					//a1fs_extent *extent = (a1fs_extent*)(indirect_blocks + (sizeof(a1fs_extent) * k));
-					a1fs_extent *extent = (a1fs_extent*)(image + A1FS_BLOCK_SIZE*indirect_block + (sizeof(a1fs_extent)*k));
-
-					if (extent->count != 0){
-						extents_count++;
-					}
-					if (!append || extents_count == modify->extents){
-						if (extent->count == 0) {					//case where this extent is empty and was never assigned any blocks
-							init_extent(extent, block_index, 1, image);
-							modify->extents += 1;
-							return extent_num;
-						}
-						else {
-							if (get_bm(block_bitmap, extent->start + extent->count) == 0){
-								set_bm(block_bitmap, extent->start + extent->count, 1);
-								extent->count += 1;
-								superblock->free_blocks_count -= 1;
-								return extent_num;
-							}
-							if (!append){
-								
-							}
-						}
-						extent_num += 1;
-					}
-				}
-			}
-			//if we reach this point without returning, should we even try to extend the indirect block extent?
-		}
-	}
-
-	return -1;
-}
 
 /**
  * Get file or directory attributes.
@@ -604,7 +517,7 @@ static int a1fs_getattr(const char *path, struct stat *st)
 	a1fs_superblock *sb = (a1fs_superblock*)(fs->image);
 	a1fs_inode *inodes = (a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * sb->inode_table);
 	a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
-	
+
 	// Base case if getattr is being called on the root directory.
 	if (strcmp(path, "/") == 0) {
 		st->st_mode = root_inode->mode;
