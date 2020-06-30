@@ -34,12 +34,6 @@
  */
 #define A1FS_BLOCK_SIZE 4096
 
-/*
- * Creation modes for inode.
- */
-#define A1FS_S_IFLNK 0xA000 /* symbolic link */
-#define A1FS_S_IFREG 0x8000 /* regular file */
-#define A1FS_S_IFDIR 0x4000 /* directory */
 
 /* Block number (block pointer) type. */
 typedef uint32_t a1fs_blk_t;

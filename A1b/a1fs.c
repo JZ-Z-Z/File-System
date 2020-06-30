@@ -196,7 +196,6 @@ int inode_by_name(a1fs_inode *dir, a1fs_inode **file, char *name, void *image){
 						}
 
 						// Check if this is the entry we are looking for.
-						printf("Entry: %s\n", curr_entry->name);
 						if (strcmp(curr_entry->name, name) == 0){
 							int inode_location = sb->inode_table*A1FS_BLOCK_SIZE + curr_entry->ino*sizeof(a1fs_inode);
 							*file = (a1fs_inode*)(image + inode_location);
@@ -243,7 +242,6 @@ int inode_from_path(a1fs_inode *dir, a1fs_inode **file, const char *path, void *
 				}
 				strncpy(currFile, path+start+1, end-start-1);
 				currFile[end-start-1] = '\0';
-				printf("currFile: %s\n", currFile);
 				a1fs_inode* target = ((void*)0);
 				// We found the file in the current directory.
 				if (inode_by_name(curr_dir, &target, currFile, image) == 0){
@@ -255,7 +253,6 @@ int inode_from_path(a1fs_inode *dir, a1fs_inode **file, const char *path, void *
 					} else {
 						// Check if this is a directory.
 						if (S_ISDIR(target->mode)){
-							printf("Intermediate dir: %s\n", currFile);
 							curr_dir = target;
 							start = i;
 						}
@@ -379,7 +376,8 @@ void init_extent(a1fs_extent *extent, int start, int count, void *image){
 }
 
 /**
- * Append a new block to an inode
+ * Append (add to the end) a new block to an inode. Either extending the last extent or
+ * creating a new extent at the back.
  * 
  * @param inode		the inode to be modified
  * @param image		the disk image
@@ -390,7 +388,7 @@ int append_new_block(a1fs_inode *inode, void *image){
 	a1fs_superblock *sb = (a1fs_superblock*)(image);
 	unsigned char *block_bitmap = (unsigned char*)(image + (A1FS_BLOCK_SIZE * sb->block_bitmap));
 
-
+	// Check if there are any available blocks in the file system.
 	int block_index = find_available_space(image, 0);
 	if (block_index == -1){
 		return -1;
@@ -427,6 +425,7 @@ int append_new_block(a1fs_inode *inode, void *image){
 	// Two possible cases: 1. Could not extend last extent. 2. Inode has no extents.
 	// In both scenarios we need to create a new extent at the end. 
 
+	// Check if the new extent will be in the indirect block.
 	if (i >= A1FS_IND_BLOCK){
 		int extent_location = A1FS_BLOCK_SIZE*(sb->data_region + ((inode->extent)[A1FS_IND_BLOCK]).start) + (i-A1FS_IND_BLOCK)*sizeof(a1fs_extent);
 		curr_extent = (a1fs_extent*)(image + extent_location);
@@ -543,28 +542,24 @@ int allocate_new_block(a1fs_inode **inode, void *image) {
  */
 static int a1fs_getattr(const char *path, struct stat *st)
 {
-	printf("Path: %s\n", path);
-	printf("Path len: %ld\n", strlen(path));
 	if (strlen(path) >= A1FS_PATH_MAX) return -ENAMETOOLONG;
 	fs_ctx *fs = get_fs();
 
 	memset(st, 0, sizeof(*st));
-	//NOTE: This is just a placeholder that allows the file system to be mounted
-	// without errors. You should remove this from your implementation.
-	if (strcmp(path, "/") == 0) {
-		//NOTE: all the fields set below are required and must be set according
-		// to the information stored in the corresponding inode
-		st->st_mode = S_IFDIR | 0777;
-		st->st_nlink = 22555;
-		st->st_size = 0;
-		st->st_blocks = 0 * A1FS_BLOCK_SIZE / 512;
-		st->st_mtim = (struct timespec){0};
-		return 0;
-	}
 
 	a1fs_superblock *sb = (a1fs_superblock*)(fs->image);
 	a1fs_inode *inodes = (a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE * sb->inode_table);
 	a1fs_inode *root_inode = inodes + A1FS_ROOT_INO;
+	
+	// Base case if getattr is being called on the root directory.
+	if (strcmp(path, "/") == 0) {
+		st->st_mode = root_inode->mode;
+		st->st_nlink = root_inode->links;
+		st->st_size = root_inode->size;
+		st->st_blocks = root_inode->size / 512;
+		st->st_mtim = root_inode->mtime;
+		return 0;
+	}
 
 	// Extract dir/file names from path one by one.
 	a1fs_inode *target = (void *)0;
@@ -707,7 +702,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 		return -ENOSPC;
 	}
 
-	//find parent directory to insert new dentry in
+	// From path extract the parent directory and the name of the new directory.
 	a1fs_inode *parent_directory = (void *)0;
 	char path_copy[A1FS_NAME_MAX];
 	strcpy(path_copy, path);
@@ -715,7 +710,6 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	*final_slash = '\0';
 	char file_name[A1FS_NAME_MAX];
 	strcpy(file_name, (final_slash + 1));
-	printf("Path to parent: %s File name: %s\n", path_copy, file_name);
 
 	// Base case for when we are creating a new dir in the root.
 	if (strlen(path_copy) == 0){
@@ -725,12 +719,12 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 		inode_from_path(root_inode, &parent_directory, path_copy, fs->image);
 	}
 
-	//find place in parent directory to insert new dentry into
+	// Make sure we have an available inode for the new dir entry.
 	int created_dentry = 0;
 	int inode_index = find_available_space(fs->image, 1);
 
 
-	// Look through the parent's existing extents for free space.
+	// Look through the parent's existing extents looking for free space.
 	a1fs_extent *curr_extent;
 	int extents_count = 0;
 	int i = 0;
@@ -746,7 +740,6 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 		}
 		if (curr_extent->count > 0){
 	        // Loop through this entire extent (depending on extent length).
-	        printf("Extent[%d] has size: %d\n", i, curr_extent->count);
 			for (size_t j = 0; j < curr_extent->count; j++){
 				int curr_entry_block = superblock->data_region + curr_extent->start + j;
 
@@ -755,7 +748,6 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 						a1fs_dentry *curr_entry = (a1fs_dentry*)(fs->image + A1FS_BLOCK_SIZE*curr_entry_block + k*sizeof(a1fs_dentry));
 
 						// Check if this entry is not in use.
-						printf("Extent[%d] dentry[%ld] has ino: %d\n", i, k, curr_entry->ino);
 						if ((curr_entry->ino == 0 && (curr_entry->name)[0] == '\0') || curr_entry == NULL){
 				            strcpy(curr_entry->name, file_name);
 				            curr_entry->ino = inode_index;
@@ -775,13 +767,15 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 		i++;
 	}
 
-	//The existing extents had no space available, need to assign more space to the parent dir.
+	// The existing extents had no space available, need to assign more space to the parent dir.
 	if (!created_dentry) {	
+		// Check if we can extend an existing extent, or create a new extent in the parent dir.
 		int extent_index = allocate_new_block(&parent_directory, fs->image);
 		if (extent_index == -1){
 			return -ENOSPC;
 		}
 
+		// Now that we have allocated a new block, we need to get a pointer to that location.
 		a1fs_dentry *new_entry;
 
 		// Check if the new block is part of an extent stored in the indirect block.
@@ -797,6 +791,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 			new_entry = (a1fs_dentry*)(fs->image + entry_byte + (((parent_directory->extent)[extent_index]).count - 1)*A1FS_BLOCK_SIZE);
 		}
 
+		// Copy the information into the newly created dentry.
 		strcpy(new_entry->name, file_name);
         new_entry->ino = inode_index;
 	}
@@ -805,7 +800,7 @@ static int a1fs_mkdir(const char *path, mode_t mode)
 	a1fs_inode *inode = (a1fs_inode*)(fs->image + A1FS_BLOCK_SIZE*superblock->inode_table + inode_index*sizeof(a1fs_inode));
 	init_inode(inode, mode | S_IFDIR);
 
-	// Update
+	// Update the file system.
 	set_bm(inode_bitmap, inode_index, 1);
 	superblock->free_inodes_count -= 1;
 	parent_directory->dentry++;
@@ -992,7 +987,6 @@ static int a1fs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	*final_slash = '\0';
 	char file_name[A1FS_NAME_MAX];
 	strcpy(file_name, (final_slash + 1));
-	printf("Path to parent: %s File name: %s\n", path_copy, file_name);
 
 	// Base case for when we are creating a new dir in the root.
 	if (strlen(path_copy) == 0){
@@ -1545,6 +1539,7 @@ static int a1fs_truncate(const char *path, off_t size)
 
 	if (target->size < (uint64_t)size) { // Need to extend the file.
 	
+		// We are measuring size based on actual data bytes, so need to find the data bytes first. 
 		int started = 0;
 		int byte_count = 0;
 		for (int i = 0; i < extents_count-1; i++){
@@ -1554,10 +1549,11 @@ static int a1fs_truncate(const char *path, off_t size)
 				for (size_t k = 0; k < A1FS_BLOCK_SIZE; k++){
 					unsigned char *byte = (unsigned char*)(fs->image + A1FS_BLOCK_SIZE*curr_block + k);
 					
-					// If the byte has some value then it is the first data byte.
+					// If the byte has some value then it is the first data byte and we havent started yet.
 					if (*byte != 0 && !started){
 						started = 1;
 					}
+					// We found the first byte and are counting up to the last byte.
 					if (started){
 						byte_count++;
 					}
@@ -1565,7 +1561,7 @@ static int a1fs_truncate(const char *path, off_t size)
 			}
 		}
 
-		// We already have enough space to extend the file to the given size.
+		// We already have enough space allocated to the file to extend to the given size.
 		if (byte_count >= size){
 			target->size = size;
 			return 0;
@@ -1586,6 +1582,8 @@ static int a1fs_truncate(const char *path, off_t size)
 
 	}
 	else {                     // Need to shrink the file.
+
+		// We need to shrink the file from the end, so need to find the last data byte.
 		int started = 0;
 		size_t byte_count = 0;
 		int found_last_byte = 0;
@@ -1597,13 +1595,15 @@ static int a1fs_truncate(const char *path, off_t size)
 				for (int k = 0; k < A1FS_BLOCK_SIZE; k++){
 					unsigned char *byte = (unsigned char*)(fs->image + A1FS_BLOCK_SIZE*curr_block + k);
 					
-					// If the byte has some value then it is the first data byte.
+					// If the byte has some value then it is the first data byte and we havent started yet.
 					if (*byte != 0 && !started){
 						started = 1;
 					}
+					// We found the first byte and are counting up to the last byte.
 					if (started){
 						byte_count++;
 					}
+					// We found the last byte, write down its location.
 					if (byte_count == target->size){
 						found_last_byte = 1;
 						last_byte_loc[0] = i;
@@ -1621,6 +1621,7 @@ static int a1fs_truncate(const char *path, off_t size)
 			}
 		}
 
+		// Now iterate backwards starting from the last data byte, deleting values.
 		int size_achieved = 0;
 		for (int i = last_byte_loc[0]; i >= 0; i--){
 			for (int j = last_byte_loc[1]; j >= 0; j--){
@@ -1813,7 +1814,6 @@ static int a1fs_write(const char *path, const char *buf, size_t size,
 					// We have read the number of bytes requested, return success.
 					else {
 						target->size += byte_count;
-						printf("Wrote %ld bytes\n", byte_count);
 						return byte_count;
 					}
 				}
@@ -1863,7 +1863,6 @@ static int a1fs_write(const char *path, const char *buf, size_t size,
 		}
 	}
 	target->size += byte_count;
-	printf("Wrote %ld bytes\n", byte_count);
 	return byte_count;
 }
 
