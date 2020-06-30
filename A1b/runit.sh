@@ -23,4 +23,4 @@ cd ..
 fusermount -u filesystem
 ./a1fs disk.img filesystem
 cd filesystem
-ls cd..
+ls cd ..
